@@ -1,0 +1,16 @@
+R_DEF: Internal format may change without notice
+local
+color brand_accent
+color brand_dark
+color brand_olive
+color brand_soft_bg
+drawable app_logo_clean
+drawable brand_logo
+drawable brand_wordmark
+drawable fssai_logo
+drawable instagram_icon
+drawable phone_icon
+drawable whatsapp_icon
+string app_name
+style Theme.CrumbsAndSoul
+xml file_paths

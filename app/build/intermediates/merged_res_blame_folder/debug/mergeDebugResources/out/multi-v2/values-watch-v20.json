@@ -1,0 +1,20 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.crumbsandsoul.billing.app-mergeDebugResources-63:/values-watch-v20/values-watch-v20.xml",
+            "map": [
+                {
+                    "source": "/Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/4670df68fb0771065f987f1da8880602/transformed/appcompat-1.6.1/res/values-watch-v20/values-watch-v20.xml",
+                    "from": {
+                        "startLines": "2,5,8",
+                        "startColumns": "4,4,4",
+                        "startOffsets": "55,214,385",
+                        "endLines": "4,7,10",
+                        "endColumns": "12,12,12",
+                        "endOffsets": "209,380,553"
+                    }
+                }
+            ]
+        }
+    ]
+}
