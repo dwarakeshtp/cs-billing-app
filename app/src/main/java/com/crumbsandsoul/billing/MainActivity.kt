@@ -483,10 +483,11 @@ fun BillingApp() {
                 AppSection.entries.forEach { destination ->
                     val selected = destination == section
                     val navLabel = when (destination) {
-                        AppSection.AddProduct -> "Product\nDetails"
-                        AppSection.AddCustomer -> "Customer\nDetails"
-                        AppSection.SalesReports -> "Reports\n& Backup"
-                        else -> destination.title
+                        AppSection.GenerateInvoice -> "Invoice"
+                        AppSection.AddProduct -> "Products"
+                        AppSection.AddCustomer -> "Customers"
+                        AppSection.InvoiceHistory -> "History"
+                        AppSection.SalesReports -> "Reports"
                     }
                     Column(
                         modifier = Modifier
@@ -514,10 +515,11 @@ fun BillingApp() {
                             textAlign = TextAlign.Center,
                             color = if (selected) ComposeColor(0xFF5E6840) else ComposeColor(0xFF2B2B2B),
                             fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Bold,
-                            fontSize = 12.sp,
-                            lineHeight = 14.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                            fontSize = 14.sp,
+                            lineHeight = 16.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false
                         )
                     }
                 }
