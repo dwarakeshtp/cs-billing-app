@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
@@ -162,8 +163,8 @@ data class InvoiceRecord(
 
 enum class AppSection(val title: String) {
     GenerateInvoice("Generate Invoice"),
-    AddProduct("Add Product"),
-    AddCustomer("Add Customer"),
+    AddProduct("Product Details"),
+    AddCustomer("Customer Details"),
     InvoiceHistory("Invoice History"),
     SalesReports("Sales Reports")
 }
@@ -248,8 +249,16 @@ fun BillingApp() {
     val focusManager = LocalFocusManager.current
     val storage = remember { BillingStorage(context) }
     var section by remember { mutableStateOf(AppSection.GenerateInvoice) }
-    val products = remember { mutableStateListOf<Product>().apply { addAll(storage.loadProducts()) } }
-    val customers = remember { mutableStateListOf<Customer>().apply { addAll(storage.loadCustomers()) } }
+    val products = remember {
+        mutableStateListOf<Product>().apply {
+            addAll(storage.loadProducts().sortedBy { it.name.trim().lowercase(Locale.getDefault()) })
+        }
+    }
+    val customers = remember {
+        mutableStateListOf<Customer>().apply {
+            addAll(storage.loadCustomers().sortedBy { it.name.trim().lowercase(Locale.getDefault()) })
+        }
+    }
     val invoiceHistory = remember { mutableStateListOf<InvoiceRecord>().apply { addAll(storage.loadInvoiceHistory()) } }
     val invoiceDraft = remember { InvoiceDraftState(storage.previewInvoiceNumber()) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -267,7 +276,11 @@ fun BillingApp() {
             ) {
                 AppSection.entries.forEach { destination ->
                     val selected = destination == section
-                    val navLabel = if (destination == AppSection.AddCustomer) "Add\nCustomer" else destination.title
+                    val navLabel = when (destination) {
+                        AppSection.AddProduct -> "Product\nDetails"
+                        AppSection.AddCustomer -> "Customer\nDetails"
+                        else -> destination.title
+                    }
                     Column(
                         modifier = Modifier
                             .weight(1f)
@@ -426,11 +439,24 @@ fun BillingApp() {
                     },
                     onAdd = { name, price ->
                         products.add(Product(name.trim(), price))
+                        products.sortProductsByNameAsc()
                         storage.saveProducts(products.toList())
+                    },
+                    onUpdateProduct = { oldName, oldPrice, newName, newPrice ->
+                        val idx = products.indexOfFirst {
+                            it.name == oldName &&
+                                it.defaultPrice.roundToInt() == oldPrice.roundToInt()
+                        }
+                        if (idx >= 0) {
+                            products[idx] = Product(newName.trim(), newPrice)
+                            products.sortProductsByNameAsc()
+                            storage.saveProducts(products.toList())
+                        }
                     },
                     onImport = { imported ->
                         products.clear()
                         products.addAll(imported)
+                        products.sortProductsByNameAsc()
                         storage.saveProducts(products.toList())
                     },
                     onDelete = { index ->
@@ -450,11 +476,21 @@ fun BillingApp() {
                     },
                     onAdd = { name, phone, gst ->
                         customers.add(Customer(name.trim(), phone.trim(), gst.trim()))
+                        customers.sortCustomersByNameAsc()
                         storage.saveCustomers(customers.toList())
+                    },
+                    onUpdateCustomer = { oldPhone, newName, newPhone, newGst ->
+                        val idx = customers.indexOfFirst { it.phone == oldPhone }
+                        if (idx >= 0) {
+                            customers[idx] = Customer(newName.trim(), newPhone.trim(), newGst.trim())
+                            customers.sortCustomersByNameAsc()
+                            storage.saveCustomers(customers.toList())
+                        }
                     },
                     onImport = { imported ->
                         customers.clear()
                         customers.addAll(imported)
+                        customers.sortCustomersByNameAsc()
                         storage.saveCustomers(customers.toList())
                     },
                     onDelete = { index ->
@@ -973,6 +1009,7 @@ fun ProductScreen(
     context: Context,
     onExport: () -> Unit,
     onAdd: (String, Double) -> Unit,
+    onUpdateProduct: (oldName: String, oldPrice: Double, newName: String, newPrice: Double) -> Unit,
     onImport: (List<Product>) -> Unit,
     onDelete: (Int) -> Unit
 ) {
@@ -983,6 +1020,10 @@ fun ProductScreen(
     var duplicateNameError by remember { mutableStateOf(false) }
     var pendingAdd by remember { mutableStateOf<Product?>(null) }
     var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var editingProduct by remember { mutableStateOf<Product?>(null) }
+    var editProdName by remember { mutableStateOf("") }
+    var editProdPrice by remember { mutableStateOf("") }
+    var editProdDupError by remember { mutableStateOf(false) }
     var showImportConfirm by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -1003,8 +1044,10 @@ fun ProductScreen(
         }
     }
 
-    Text("Add Product", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    Text("Product Details", fontSize = 22.sp, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(12.dp))
+    Text("New product details", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+    Spacer(modifier = Modifier.height(8.dp))
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
@@ -1068,7 +1111,9 @@ fun ProductScreen(
         ) { Text("Import Backup") }
     }
 
-    Spacer(modifier = Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(16.dp))
+    Text("Saved product details", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+    Spacer(modifier = Modifier.height(8.dp))
     LazyColumn {
         itemsIndexed(products) { index, product ->
             Row(
@@ -1082,26 +1127,118 @@ fun ProductScreen(
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
-                IconButton(
-                    onClick = { pendingDeleteIndex = index },
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Delete product",
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
+                Row {
+                    IconButton(
+                        onClick = {
+                            editingProduct = product
+                            editProdName = product.name
+                            editProdPrice = product.defaultPrice.roundToInt().toString()
+                            editProdDupError = false
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit product")
+                    }
+                    IconButton(
+                        onClick = { pendingDeleteIndex = index },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete product",
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
                 }
             }
             HorizontalDivider()
         }
     }
 
+    if (editingProduct != null) {
+        val orig = editingProduct!!
+        AlertDialog(
+            onDismissRequest = {
+                editingProduct = null
+                editProdDupError = false
+            },
+            title = { Text("Edit product details") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editProdName,
+                        onValueChange = {
+                            editProdName = it
+                            editProdDupError = false
+                        },
+                        label = { Text("Product name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        isError = editProdDupError,
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Words,
+                            imeAction = ImeAction.Next
+                        )
+                    )
+                    if (editProdDupError) {
+                        Text(
+                            "Another product already uses this name",
+                            color = ComposeColor(0xFFB00020),
+                            fontSize = 12.sp
+                        )
+                    }
+                    OutlinedTextField(
+                        value = editProdPrice,
+                        onValueChange = { editProdPrice = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Default unit price") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Done
+                        )
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val p = editProdPrice.toIntOrNull()
+                    if (editProdName.isBlank() || p == null || p < 0) {
+                        Toast.makeText(context, "Enter valid name and price", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    val trimmed = editProdName.trim()
+                    val norm = trimmed.lowercase(Locale.getDefault())
+                    val nameTaken = products.any {
+                        it.name.trim().lowercase(Locale.getDefault()) == norm &&
+                            !(it.name == orig.name &&
+                                it.defaultPrice.roundToInt() == orig.defaultPrice.roundToInt())
+                    }
+                    if (nameTaken) {
+                        editProdDupError = true
+                        Toast.makeText(context, "Duplicate product name not allowed", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    onUpdateProduct(orig.name, orig.defaultPrice, trimmed, p.toDouble())
+                    editingProduct = null
+                    editProdDupError = false
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    Toast.makeText(context, "Product updated", Toast.LENGTH_SHORT).show()
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    editingProduct = null
+                    editProdDupError = false
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (pendingAdd != null) {
         val product = pendingAdd!!
         AlertDialog(
             onDismissRequest = { pendingAdd = null },
-            title = { Text("Confirm Product Add") },
+            title = { Text("Confirm product details") },
             text = { Text("Add product '${product.name}' with default price ₹${money(product.defaultPrice)}?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -1126,7 +1263,7 @@ fun ProductScreen(
         val product = products[idx]
         AlertDialog(
             onDismissRequest = { pendingDeleteIndex = null },
-            title = { Text("Confirm Product Delete") },
+            title = { Text("Delete product details") },
             text = { Text("Delete product '${product.name}'?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -1143,7 +1280,7 @@ fun ProductScreen(
     if (showImportConfirm) {
         AlertDialog(
             onDismissRequest = { showImportConfirm = false },
-            title = { Text("Import Products Backup") },
+            title = { Text("Import product details backup") },
             text = { Text("This will replace your current products list. Continue?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -1164,6 +1301,7 @@ fun CustomerScreen(
     context: Context,
     onExport: () -> Unit,
     onAdd: (String, String, String) -> Unit,
+    onUpdateCustomer: (oldPhone: String, newName: String, newPhone: String, newGst: String) -> Unit,
     onImport: (List<Customer>) -> Unit,
     onDelete: (Int) -> Unit
 ) {
@@ -1181,6 +1319,11 @@ fun CustomerScreen(
     var duplicatePhoneError by remember { mutableStateOf(false) }
     var pendingAdd by remember { mutableStateOf<Customer?>(null) }
     var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var editingCustomer by remember { mutableStateOf<Customer?>(null) }
+    var editCustName by remember { mutableStateOf("") }
+    var editCustPhone by remember { mutableStateOf("") }
+    var editCustGst by remember { mutableStateOf("") }
+    var editCustDupError by remember { mutableStateOf(false) }
     var showImportConfirm by remember { mutableStateOf(false) }
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -1248,8 +1391,10 @@ fun CustomerScreen(
     val nameError = showValidation && name.isBlank()
     val phoneError = showValidation && (phone.isBlank() || normalizeWhatsAppPhone(phone) == null)
 
-    Text("Add Customer", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+    Text("Customer Details", fontSize = 22.sp, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(12.dp))
+    Text("New customer details", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+    Spacer(modifier = Modifier.height(8.dp))
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedTextField(
@@ -1360,7 +1505,9 @@ fun CustomerScreen(
         ) { Text("Import Backup") }
     }
 
-    Spacer(modifier = Modifier.height(12.dp))
+    Spacer(modifier = Modifier.height(16.dp))
+    Text("Saved customer details", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+    Spacer(modifier = Modifier.height(8.dp))
     LazyColumn {
         itemsIndexed(customers) { index, customer ->
             Row(
@@ -1374,26 +1521,126 @@ fun CustomerScreen(
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis
                 )
-                IconButton(
-                    onClick = { pendingDeleteIndex = index },
-                    modifier = Modifier.size(48.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Delete,
-                        contentDescription = "Delete customer",
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
+                Row {
+                    IconButton(
+                        onClick = {
+                            editingCustomer = customer
+                            editCustName = customer.name
+                            editCustPhone = customer.phone
+                            editCustGst = customer.gst
+                            editCustDupError = false
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = "Edit customer")
+                    }
+                    IconButton(
+                        onClick = { pendingDeleteIndex = index },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Delete customer",
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
                 }
             }
             HorizontalDivider()
         }
     }
 
+    if (editingCustomer != null) {
+        val orig = editingCustomer!!
+        AlertDialog(
+            onDismissRequest = {
+                editingCustomer = null
+                editCustDupError = false
+            },
+            title = { Text("Edit customer details") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = editCustName,
+                        onValueChange = { editCustName = it },
+                        label = { Text("Name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(
+                            capitalization = KeyboardCapitalization.Words,
+                            imeAction = ImeAction.Next
+                        )
+                    )
+                    OutlinedTextField(
+                        value = editCustPhone,
+                        onValueChange = {
+                            editCustPhone = it.filter { ch -> ch.isDigit() }.take(10)
+                            editCustDupError = false
+                        },
+                        label = { Text("Phone (10 digits)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        isError = editCustDupError,
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Number,
+                            imeAction = ImeAction.Next
+                        )
+                    )
+                    if (editCustDupError) {
+                        Text(
+                            "Another customer already uses this phone number",
+                            color = ComposeColor(0xFFB00020),
+                            fontSize = 12.sp
+                        )
+                    }
+                    OutlinedTextField(
+                        value = editCustGst,
+                        onValueChange = { editCustGst = it },
+                        label = { Text("GST (Optional)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (editCustName.isBlank()) {
+                        Toast.makeText(context, "Name is required", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    val newNorm = normalizeWhatsAppPhone(editCustPhone) ?: run {
+                        Toast.makeText(context, "Enter valid 10-digit phone number", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    val editIdx = customers.indexOfFirst { it.phone == orig.phone && it.name == orig.name }
+                    val phoneTaken = customers.withIndex().any { (i, c) ->
+                        i != editIdx && normalizeWhatsAppPhone(c.phone) == newNorm
+                    }
+                    if (phoneTaken) {
+                        editCustDupError = true
+                        Toast.makeText(context, "Duplicate phone number not allowed", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    val displayPhone = formatPhoneForDisplay(newNorm)
+                    onUpdateCustomer(orig.phone, editCustName.trim(), displayPhone, editCustGst.trim())
+                    editingCustomer = null
+                    editCustDupError = false
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    Toast.makeText(context, "Customer updated", Toast.LENGTH_SHORT).show()
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    editingCustomer = null
+                    editCustDupError = false
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (pendingAdd != null) {
         val customer = pendingAdd!!
         AlertDialog(
             onDismissRequest = { pendingAdd = null },
-            title = { Text("Confirm Customer Add") },
+            title = { Text("Confirm customer details") },
             text = { Text("Add customer '${customer.name}' with phone ${customer.phone}?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -1420,7 +1667,7 @@ fun CustomerScreen(
         val customer = customers[idx]
         AlertDialog(
             onDismissRequest = { pendingDeleteIndex = null },
-            title = { Text("Confirm Customer Delete") },
+            title = { Text("Delete customer details") },
             text = { Text("Delete customer '${customer.name}' (${customer.phone})?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -1437,7 +1684,7 @@ fun CustomerScreen(
     if (showImportConfirm) {
         AlertDialog(
             onDismissRequest = { showImportConfirm = false },
-            title = { Text("Import Customers Backup") },
+            title = { Text("Import customer details backup") },
             text = { Text("This will replace your current customers list. Continue?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -1477,6 +1724,7 @@ fun InvoiceHistoryScreen(
     var dateExpanded by remember { mutableStateOf(false) }
     var paymentExpanded by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<InvoiceRecord?>(null) }
+    var pendingPaymentReminder by remember { mutableStateOf<InvoiceRecord?>(null) }
     var pendingPaymentChange by remember { mutableStateOf<Pair<InvoiceRecord, Boolean>?>(null) }
     var editingRecord by remember { mutableStateOf<InvoiceRecord?>(null) }
     var editName by remember { mutableStateOf("") }
@@ -1685,7 +1933,7 @@ fun InvoiceHistoryScreen(
                     Text("Total: ₹${money(record.total)}")
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End)
+                        horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.End)
                     ) {
                         IconButton(
                             onClick = {
@@ -1703,7 +1951,7 @@ fun InvoiceHistoryScreen(
                                     editUnitInputs[idx] = item.unitPrice.roundToInt().toString()
                                 }
                             },
-                            modifier = Modifier.size(44.dp)
+                            modifier = Modifier.size(48.dp)
                         ) {
                             Icon(Icons.Default.Edit, contentDescription = "Edit invoice")
                         }
@@ -1714,7 +1962,7 @@ fun InvoiceHistoryScreen(
                             } else {
                                 Toast.makeText(context, "PDF not found on device", Toast.LENGTH_SHORT).show()
                             }
-                        }, modifier = Modifier.size(44.dp)) {
+                        }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Visibility, contentDescription = "View invoice")
                         }
                         IconButton(onClick = {
@@ -1728,10 +1976,37 @@ fun InvoiceHistoryScreen(
                             } else {
                                 Toast.makeText(context, "PDF not found on device", Toast.LENGTH_SHORT).show()
                             }
-                        }, modifier = Modifier.size(44.dp)) {
+                        }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Share, contentDescription = "Share invoice via WhatsApp")
                         }
-                        IconButton(onClick = { pendingDelete = record }, modifier = Modifier.size(44.dp)) {
+                        if (!record.paymentReceived) {
+                            IconButton(
+                                onClick = {
+                                    if (record.customerPhone.isBlank()) {
+                                        Toast.makeText(
+                                            context,
+                                            "Add customer phone on this invoice to send a reminder",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else if (normalizeWhatsAppPhone(record.customerPhone) == null) {
+                                        Toast.makeText(
+                                            context,
+                                            "Invalid phone number for WhatsApp",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        pendingPaymentReminder = record
+                                    }
+                                },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Send,
+                                    contentDescription = "Send payment reminder via WhatsApp"
+                                )
+                            }
+                        }
+                        IconButton(onClick = { pendingDelete = record }, modifier = Modifier.size(48.dp)) {
                             Icon(
                                 Icons.Default.Delete,
                                 contentDescription = "Delete invoice",
@@ -1766,6 +2041,36 @@ fun InvoiceHistoryScreen(
             },
             dismissButton = {
                 TextButton(onClick = { pendingPaymentChange = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (pendingPaymentReminder != null) {
+        val reminderRecord = pendingPaymentReminder!!
+        AlertDialog(
+            onDismissRequest = { pendingPaymentReminder = null },
+            title = { Text("Send payment reminder?") },
+            text = {
+                Text(
+                    "Open WhatsApp to send a payment reminder for invoice ${reminderRecord.invoiceNumber} " +
+                        "(${reminderRecord.invoiceDate}) — ₹${money(reminderRecord.total)} to " +
+                        reminderRecord.customerName.trim().ifBlank { "customer" } + "?"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    sendPaymentReminderWhatsApp(
+                        context,
+                        reminderRecord.customerPhone,
+                        reminderRecord.invoiceNumber,
+                        reminderRecord.invoiceDate,
+                        money(reminderRecord.total)
+                    )
+                    pendingPaymentReminder = null
+                }) { Text("Send") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingPaymentReminder = null }) { Text("Cancel") }
             }
         )
     }
@@ -2284,6 +2589,67 @@ fun buildInvoicePdfRows(records: List<InvoiceRecord>): List<ReportInvoicePdfRow>
         }
 }
 
+private data class ItemSalesB2bB2cAgg(
+    var b2bQty: Int = 0,
+    var b2bSales: Double = 0.0,
+    var b2cQty: Int = 0,
+    var b2cSales: Double = 0.0
+) {
+    val totalQty: Int get() = b2bQty + b2cQty
+    val totalSales: Double get() = b2bSales + b2cSales
+}
+
+/** One row per distinct item name with quantity and sales split by B2B vs B2C invoices. */
+private fun buildItemSalesB2bB2cRows(records: List<InvoiceRecord>): List<Pair<String, ItemSalesB2bB2cAgg>> {
+    val map = linkedMapOf<String, ItemSalesB2bB2cAgg>()
+    records.forEach { record ->
+        val isB2b = normalizeInvoiceType(record.invoiceType) == "B2B"
+        record.items.forEach itemLoop@{ item ->
+            val name = item.productName.trim()
+            if (name.isEmpty()) return@itemLoop
+            val agg = map.getOrPut(name) { ItemSalesB2bB2cAgg() }
+            if (isB2b) {
+                agg.b2bQty += item.normalizedQuantity()
+                agg.b2bSales += item.lineTotal()
+            } else {
+                agg.b2cQty += item.normalizedQuantity()
+                agg.b2cSales += item.lineTotal()
+            }
+        }
+    }
+    return map.map { (name, agg) -> name to agg }
+        .sortedBy { it.first.lowercase(Locale.getDefault()) }
+}
+
+data class CustomerSalesExcelRow(
+    val customerName: String,
+    val customerPhone: String,
+    val invoiceCount: Int,
+    val totalSales: Double
+)
+
+/** Customer + phone bucket: invoice count and sum of totals for filtered records. */
+fun buildCustomerSalesExcelRows(records: List<InvoiceRecord>): List<CustomerSalesExcelRow> {
+    return records
+        .groupBy {
+            val n = it.customerName.ifBlank { "Walk-in Customer" }
+            val p = it.customerPhone.trim()
+            n to p
+        }
+        .map { (key, list) ->
+            CustomerSalesExcelRow(
+                customerName = key.first,
+                customerPhone = key.second,
+                invoiceCount = list.size,
+                totalSales = list.sumOf { it.total }
+            )
+        }
+        .sortedWith(
+            compareBy<CustomerSalesExcelRow> { it.customerName.lowercase(Locale.getDefault()) }
+                .thenBy { it.customerPhone }
+        )
+}
+
 fun monthKey(millis: Long): String {
     if (millis <= 0L) return "Unknown Month"
     val date = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -2299,6 +2665,18 @@ fun isWithinDays(millis: Long, days: Int): Boolean {
 
 fun money(value: Double): String {
     return value.roundToInt().toString()
+}
+
+private fun MutableList<Product>.sortProductsByNameAsc() {
+    val sorted = sortedBy { it.name.trim().lowercase(Locale.getDefault()) }
+    clear()
+    addAll(sorted)
+}
+
+private fun MutableList<Customer>.sortCustomersByNameAsc() {
+    val sorted = sortedBy { it.name.trim().lowercase(Locale.getDefault()) }
+    clear()
+    addAll(sorted)
 }
 
 /** Normalizes persisted / UI invoice type to B2C or B2B. */
@@ -3362,6 +3740,7 @@ fun createSalesReportPdf(
     }
 }
 
+@Suppress("UNUSED_PARAMETER")
 fun createSalesReportExcel(
     context: Context,
     reportType: String,
@@ -3373,71 +3752,103 @@ fun createSalesReportExcel(
 ): File? {
     return try {
         val workbook = XSSFWorkbook()
-        val sheet = workbook.createSheet("Sales Report")
-        val detailSheet = workbook.createSheet("Invoice Details")
+        val generatedOn = SimpleDateFormat("dd MMM yyyy HH:mm", Locale.getDefault()).format(Date())
+
+        // Sheet 1 — mirrors PDF: summary table + invoice-wise details (same columns as PDF).
+        val sheet1 = workbook.createSheet("Sales Report")
         var rowIndex = 0
-        sheet.createRow(rowIndex++).apply { createCell(0).setCellValue("Crumbs & Soul Sales Report") }
-        sheet.createRow(rowIndex++).apply { createCell(0).setCellValue("Type: $reportType") }
-        sheet.createRow(rowIndex++).apply { createCell(0).setCellValue("Month: $monthFilter") }
-        sheet.createRow(rowIndex++).apply { createCell(0).setCellValue("Customer: $customerFilter") }
+        sheet1.createRow(rowIndex++).apply { createCell(0).setCellValue("Crumbs & Soul - Sales Report") }
+        sheet1.createRow(rowIndex++).apply { createCell(0).setCellValue("Type: $reportType") }
+        sheet1.createRow(rowIndex++).apply {
+            createCell(0).setCellValue("Month: $monthFilter | Customer: $customerFilter")
+        }
         rowIndex++
-        sheet.createRow(rowIndex++).apply {
+        sheet1.createRow(rowIndex++).apply {
             createCell(0).setCellValue(if (reportType == "Month-wise") "Month" else "Customer")
             createCell(1).setCellValue("Invoices")
-            createCell(2).setCellValue("Total Sales")
+            createCell(2).setCellValue("Total Sales (₹)")
         }
         rows.forEach {
-            sheet.createRow(rowIndex++).apply {
+            sheet1.createRow(rowIndex++).apply {
                 createCell(0).setCellValue(it.key)
                 createCell(1).setCellValue(it.invoiceCount.toDouble())
                 createCell(2).setCellValue(it.totalSales)
             }
         }
-        sheet.createRow(rowIndex).apply {
-            createCell(1).setCellValue("Grand Total")
+        sheet1.createRow(rowIndex++).apply {
+            createCell(0).setCellValue("Grand Total")
             createCell(2).setCellValue(rows.sumOf { it.totalSales })
         }
-        sheet.safeAutoSizeColumnsInclusive(2)
-
-        var detailRowIndex = 0
-        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Crumbs & Soul Sales Report - Invoice Details") }
-        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Type: $reportType") }
-        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Month: $monthFilter") }
-        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Customer: $customerFilter") }
-        detailRowIndex++
-        detailSheet.createRow(detailRowIndex++).apply {
-            createCell(0).setCellValue("Invoice #")
-            createCell(1).setCellValue("Type")
-            createCell(2).setCellValue("Date")
-            createCell(3).setCellValue("Invoice Name")
-            createCell(4).setCellValue("Mapped Customer (by phone)")
-            createCell(5).setCellValue("Customer Phone")
-            createCell(6).setCellValue("Item")
-            createCell(7).setCellValue("Qty")
-            createCell(8).setCellValue("Unit Price")
-            createCell(9).setCellValue("Line Total")
-            createCell(10).setCellValue("Shipping")
-            createCell(11).setCellValue("Invoice Total")
-            createCell(12).setCellValue("Payment Status")
+        sheet1.createRow(rowIndex++).apply {
+            createCell(0).setCellValue("Generated on: $generatedOn")
         }
-        buildReportDetailRows(records, customers).forEach { detail ->
-            detailSheet.createRow(detailRowIndex++).apply {
-                createCell(0).setCellValue(detail.invoiceNumber)
-                createCell(1).setCellValue(detail.invoiceType)
-                createCell(2).setCellValue(detail.invoiceDate)
-                createCell(3).setCellValue(detail.customerName)
-                createCell(4).setCellValue(detail.mappedCustomerName)
-                createCell(5).setCellValue(detail.customerPhone)
-                createCell(6).setCellValue(detail.itemName)
-                createCell(7).setCellValue(detail.quantity.toDouble())
-                createCell(8).setCellValue(detail.unitPrice)
-                createCell(9).setCellValue(detail.lineTotal)
-                createCell(10).setCellValue(detail.shippingCharges)
-                createCell(11).setCellValue(detail.invoiceTotal)
-                createCell(12).setCellValue(detail.paymentStatus)
+        rowIndex++
+        sheet1.createRow(rowIndex++).apply { createCell(0).setCellValue("Invoice-wise Details") }
+        sheet1.createRow(rowIndex++).apply {
+            createCell(0).setCellValue("Inv#")
+            createCell(1).setCellValue("Type")
+            createCell(2).setCellValue("Customer")
+            createCell(3).setCellValue("Date")
+            createCell(4).setCellValue("Qty")
+            createCell(5).setCellValue("Ship (₹)")
+            createCell(6).setCellValue("Total (₹)")
+        }
+        buildInvoicePdfRows(records).forEach { inv ->
+            sheet1.createRow(rowIndex++).apply {
+                createCell(0).setCellValue(inv.invoiceNumber)
+                createCell(1).setCellValue(inv.invoiceType)
+                createCell(2).setCellValue(inv.customerName)
+                createCell(3).setCellValue(inv.invoiceDate)
+                createCell(4).setCellValue(inv.totalItemQty.toDouble())
+                createCell(5).setCellValue(inv.shippingCharges)
+                createCell(6).setCellValue(inv.invoiceTotal)
             }
         }
-        detailSheet.safeAutoSizeColumnsInclusive(12)
+        sheet1.safeAutoSizeColumnsInclusive(6)
+
+        // Sheet 2 — item-wise sales with B2B / B2C split.
+        val sheet2 = workbook.createSheet("Item Sales B2B B2C")
+        var r2 = 0
+        sheet2.createRow(r2++).apply {
+            createCell(0).setCellValue("Item")
+            createCell(1).setCellValue("B2B Qty")
+            createCell(2).setCellValue("B2B Sales (₹)")
+            createCell(3).setCellValue("B2C Qty")
+            createCell(4).setCellValue("B2C Sales (₹)")
+            createCell(5).setCellValue("Total Qty")
+            createCell(6).setCellValue("Total Sales (₹)")
+        }
+        buildItemSalesB2bB2cRows(records).forEach { (name, agg) ->
+            sheet2.createRow(r2++).apply {
+                createCell(0).setCellValue(name)
+                createCell(1).setCellValue(agg.b2bQty.toDouble())
+                createCell(2).setCellValue(agg.b2bSales)
+                createCell(3).setCellValue(agg.b2cQty.toDouble())
+                createCell(4).setCellValue(agg.b2cSales)
+                createCell(5).setCellValue(agg.totalQty.toDouble())
+                createCell(6).setCellValue(agg.totalSales)
+            }
+        }
+        sheet2.safeAutoSizeColumnsInclusive(6)
+
+        // Sheet 3 — customer-wise sales (name + phone bucket).
+        val sheet3 = workbook.createSheet("Customer Sales")
+        var r3 = 0
+        sheet3.createRow(r3++).apply {
+            createCell(0).setCellValue("Customer")
+            createCell(1).setCellValue("Phone")
+            createCell(2).setCellValue("Invoices")
+            createCell(3).setCellValue("Total Sales (₹)")
+        }
+        buildCustomerSalesExcelRows(records).forEach { c ->
+            sheet3.createRow(r3++).apply {
+                createCell(0).setCellValue(c.customerName)
+                createCell(1).setCellValue(c.customerPhone)
+                createCell(2).setCellValue(c.invoiceCount.toDouble())
+                createCell(3).setCellValue(c.totalSales)
+            }
+        }
+        sheet3.safeAutoSizeColumnsInclusive(3)
 
         val folder = File(
             context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
@@ -3449,6 +3860,52 @@ fun createSalesReportExcel(
         file
     } catch (_: Exception) {
         null
+    }
+}
+
+fun sendPaymentReminderWhatsApp(
+    context: Context,
+    customerPhone: String,
+    invoiceNumber: String,
+    invoiceDate: String,
+    amountRupee: String
+) {
+    val normalized = normalizeWhatsAppPhone(customerPhone)
+    if (normalized == null) {
+        Toast.makeText(context, "Invalid phone number for WhatsApp", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val message = buildString {
+        appendLine("Dear Customer,")
+        appendLine()
+        appendLine("This is a gentle reminder regarding your pending payment for Crumbs & Soul.")
+        appendLine()
+        appendLine("Invoice No: $invoiceNumber")
+        appendLine("Date: $invoiceDate")
+        appendLine("Amount due: ₹$amountRupee")
+        appendLine()
+        appendLine("Thank you,")
+        appendLine("Crumbs & Soul")
+    }
+    val encoded = Uri.encode(message)
+    val url = "https://wa.me/$normalized?text=$encoded"
+    val uri = Uri.parse(url)
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp" }
+        )
+    } catch (_: Exception) {
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp.w4b" }
+            )
+        } catch (_: Exception) {
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            } catch (_: Exception) {
+                Toast.makeText(context, "Could not open WhatsApp", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 }
 
