@@ -1,22 +1,32 @@
 package com.crumbsandsoul.billing
 
+import android.Manifest
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.pdf.PdfDocument
+import android.graphics.Canvas
 import android.graphics.Rect
 import android.graphics.RectF
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
+import android.provider.ContactsContract
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -26,7 +36,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.clickable
@@ -57,53 +72,63 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color as ComposeColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.launch
+import org.apache.poi.ss.usermodel.Sheet
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
-import java.math.BigDecimal
-import java.math.RoundingMode
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 data class Product(val name: String, val defaultPrice: Double)
 data class Customer(val name: String, val phone: String, val gst: String = "")
 data class InvoiceLineItem(var productName: String, var quantity: Double, var unitPrice: Double) {
-    fun lineTotal(): Double = quantity * unitPrice
+    fun normalizedQuantity(): Int = quantity.roundToInt().coerceAtLeast(0)
+    fun lineTotal(): Double = normalizedQuantity() * unitPrice
 }
 
 class InvoiceDraftState(initialInvoiceNumber: String) {
@@ -117,6 +142,7 @@ class InvoiceDraftState(initialInvoiceNumber: String) {
     var invoiceDate by mutableStateOf("")
     var editingInvoiceNumber by mutableStateOf<String?>(null)
     var shippingChargesInput by mutableStateOf("")
+    var invoiceType by mutableStateOf("B2C")
     val lineItems = mutableStateListOf<InvoiceLineItem>()
 }
 
@@ -130,7 +156,8 @@ data class InvoiceRecord(
     val total: Double,
     val filePath: String,
     val createdAtMillis: Long,
-    val paymentReceived: Boolean
+    val paymentReceived: Boolean,
+    val invoiceType: String = "B2C"
 )
 
 enum class AppSection(val title: String) {
@@ -144,7 +171,16 @@ enum class AppSection(val title: String) {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.light(
+                Color.TRANSPARENT,
+                Color.TRANSPARENT
+            ),
+            navigationBarStyle = SystemBarStyle.light(
+                Color.argb(0xE6, 0xF7, 0xF4, 0xEA),
+                Color.argb(0xE6, 0xF7, 0xF4, 0xEA)
+            )
+        )
         setContent {
             CrumbsAndSoulTheme {
                 BillingApp()
@@ -156,9 +192,16 @@ class MainActivity : ComponentActivity() {
 private val BrandLightColors = lightColorScheme(
     primary = ComposeColor(0xFF5E6840),
     onPrimary = ComposeColor(0xFFFFFFFF),
+    primaryContainer = ComposeColor(0xFFC5E8E2),
+    onPrimaryContainer = ComposeColor(0xFF0F3D36),
     secondary = ComposeColor(0xFFBC9B56),
     onSecondary = ComposeColor(0xFF1B1B1B),
+    secondaryContainer = ComposeColor(0xFFF2DFC4),
+    onSecondaryContainer = ComposeColor(0xFF4A2C06),
     tertiary = ComposeColor(0xFF7A5A1E),
+    onTertiary = ComposeColor(0xFFFFFFFF),
+    tertiaryContainer = ComposeColor(0xFFE8D4B8),
+    onTertiaryContainer = ComposeColor(0xFF3D2608),
     background = ComposeColor(0xFFF7F4EA),
     onBackground = ComposeColor(0xFF161616),
     surface = ComposeColor(0xFFFFFCF4),
@@ -171,8 +214,16 @@ private val BrandLightColors = lightColorScheme(
 private val BrandDarkColors = darkColorScheme(
     primary = ComposeColor(0xFF9AA77A),
     onPrimary = ComposeColor(0xFF1E2910),
+    primaryContainer = ComposeColor(0xFF2D4A44),
+    onPrimaryContainer = ComposeColor(0xFFB8E0D8),
     secondary = ComposeColor(0xFFD2B475),
     onSecondary = ComposeColor(0xFF2A2113),
+    secondaryContainer = ComposeColor(0xFF4A3F28),
+    onSecondaryContainer = ComposeColor(0xFFF0D9A8),
+    tertiary = ComposeColor(0xFFE0B565),
+    onTertiary = ComposeColor(0xFF221A08),
+    tertiaryContainer = ComposeColor(0xFF5C4520),
+    onTertiaryContainer = ComposeColor(0xFFF2DDB8),
     background = ComposeColor(0xFF12120F),
     onBackground = ComposeColor(0xFFF4F0E5),
     surface = ComposeColor(0xFF1B1A16),
@@ -184,15 +235,15 @@ private val BrandDarkColors = darkColorScheme(
 
 @Composable
 fun CrumbsAndSoulTheme(content: @Composable () -> Unit) {
-    val useDark = isSystemInDarkTheme()
     MaterialTheme(
-        colorScheme = if (useDark) BrandDarkColors else BrandLightColors,
+        colorScheme = BrandLightColors,
         content = content
     )
 }
 
 @Composable
 fun BillingApp() {
+    val colorScheme = MaterialTheme.colorScheme
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val storage = remember { BillingStorage(context) }
@@ -210,18 +261,19 @@ fun BillingApp() {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(ComposeColor.White)
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                    .background(colorScheme.background)
+                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 14.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 AppSection.entries.forEach { destination ->
                     val selected = destination == section
+                    val navLabel = if (destination == AppSection.AddCustomer) "Add\nCustomer" else destination.title
                     Column(
                         modifier = Modifier
                             .weight(1f)
                             .clickable { section = destination }
                             .background(
-                                if (selected) ComposeColor(0xFFECE6FF) else ComposeColor.Transparent,
+                                if (selected) colorScheme.secondaryContainer else ComposeColor.Transparent,
                                 RoundedCornerShape(10.dp)
                             )
                             .padding(vertical = 6.dp, horizontal = 4.dp),
@@ -238,11 +290,14 @@ fun BillingApp() {
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = destination.title,
+                            text = navLabel,
                             textAlign = TextAlign.Center,
                             color = if (selected) ComposeColor(0xFF5E6840) else ComposeColor(0xFF2B2B2B),
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            fontSize = 12.sp
+                            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Bold,
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
@@ -253,13 +308,12 @@ fun BillingApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .imePadding()
                 .pointerInput(Unit) {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Final)
                             if (event.type == PointerEventType.Release && event.changes.all { !it.isConsumed }) {
-                                focusManager.clearFocus()
+                                focusManager.clearFocus(force = true)
                             }
                         }
                     }
@@ -287,7 +341,8 @@ fun BillingApp() {
                                 total = invoice.total,
                                 filePath = file.absolutePath,
                                 createdAtMillis = existing?.createdAtMillis ?: System.currentTimeMillis(),
-                                paymentReceived = existing?.paymentReceived ?: false
+                                paymentReceived = existing?.paymentReceived ?: false,
+                                invoiceType = normalizeInvoiceType(invoice.invoiceType)
                             )
                             if (isUpdate && existingIndex >= 0) {
                                 invoiceHistory[existingIndex] = record
@@ -295,7 +350,16 @@ fun BillingApp() {
                                 invoiceHistory.add(0, record)
                             }
                             storage.saveInvoiceHistory(invoiceHistory.toList())
-                            scope.launch { snackbarHostState.showSnackbar(if (isUpdate) "Updated: ${file.name}" else "Saved: ${file.name}") }
+                            scope.launch {
+                                val result = snackbarHostState.showSnackbar(
+                                    message = if (isUpdate) "Updated: ${file.name}" else "Saved: ${file.name}",
+                                    actionLabel = "Open",
+                                    withDismissAction = true
+                                )
+                                if (result == SnackbarResult.ActionPerformed) {
+                                    openPdfFile(context, file)
+                                }
+                            }
                             file
                         } else {
                             scope.launch { snackbarHostState.showSnackbar("Failed to save invoice PDF") }
@@ -317,7 +381,8 @@ fun BillingApp() {
                                 total = invoice.total,
                                 filePath = file.absolutePath,
                                 createdAtMillis = existing?.createdAtMillis ?: System.currentTimeMillis(),
-                                paymentReceived = existing?.paymentReceived ?: false
+                                paymentReceived = existing?.paymentReceived ?: false,
+                                invoiceType = normalizeInvoiceType(invoice.invoiceType)
                             )
                             if (isUpdate && existingIndex >= 0) {
                                 invoiceHistory[existingIndex] = record
@@ -344,6 +409,7 @@ fun BillingApp() {
                         invoiceDraft.invoiceDate = ""
                         invoiceDraft.editingInvoiceNumber = null
                         invoiceDraft.shippingChargesInput = ""
+                        invoiceDraft.invoiceType = "B2C"
                         invoiceDraft.lineItems.clear()
                         invoiceDraft.invoiceNumber = storage.previewInvoiceNumber()
                     }
@@ -360,6 +426,11 @@ fun BillingApp() {
                     },
                     onAdd = { name, price ->
                         products.add(Product(name.trim(), price))
+                        storage.saveProducts(products.toList())
+                    },
+                    onImport = { imported ->
+                        products.clear()
+                        products.addAll(imported)
                         storage.saveProducts(products.toList())
                     },
                     onDelete = { index ->
@@ -379,6 +450,11 @@ fun BillingApp() {
                     },
                     onAdd = { name, phone, gst ->
                         customers.add(Customer(name.trim(), phone.trim(), gst.trim()))
+                        storage.saveCustomers(customers.toList())
+                    },
+                    onImport = { imported ->
+                        customers.clear()
+                        customers.addAll(imported)
                         storage.saveCustomers(customers.toList())
                     },
                     onDelete = { index ->
@@ -411,7 +487,22 @@ fun BillingApp() {
                         if (file.exists()) file.delete()
                     }
                 )
-                AppSection.SalesReports -> SalesReportScreen(records = invoiceHistory)
+                AppSection.SalesReports -> SalesReportScreen(
+                    records = invoiceHistory,
+                    customers = customers,
+                    onReportExported = { file ->
+                        scope.launch {
+                            val result = snackbarHostState.showSnackbar(
+                                message = "Saved: ${file.name}",
+                                actionLabel = "Open",
+                                withDismissAction = true
+                            )
+                            if (result == SnackbarResult.ActionPerformed) {
+                                openExportedFile(context, file)
+                            }
+                        }
+                    }
+                )
             }
         }
     }
@@ -424,10 +515,11 @@ data class InvoiceData(
     val customerPhone: String,
     val items: List<InvoiceLineItem>,
     val shippingCharges: Double,
-    val total: Double
+    val total: Double,
+    val invoiceType: String = "B2C"
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun InvoiceScreen(
     products: List<Product>,
@@ -440,6 +532,8 @@ fun InvoiceScreen(
     resetDraft: () -> Unit
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     var selectedCustomer by remember {
         mutableStateOf(
             if (draft.selectedCustomerName.isNotBlank()) {
@@ -469,10 +563,11 @@ fun InvoiceScreen(
     }
     val filteredProducts = products.filter { it.name.contains(productSearch, ignoreCase = true) }
     val subTotal = lineItems.sumOf { it.lineTotal() }
-    val shippingCharges = shippingChargesInput.toDoubleOrNull() ?: 0.0
+    val shippingCharges = (shippingChargesInput.toIntOrNull() ?: 0).toDouble()
     val total = subTotal + shippingCharges
+    val isKeyboardVisible = WindowInsets.isImeVisible
 
-    Column(modifier = Modifier.fillMaxSize().imePadding()) {
+    Column(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .weight(1f)
@@ -488,6 +583,20 @@ fun InvoiceScreen(
             Spacer(modifier = Modifier.height(8.dp))
             Text("Invoice No: $invoiceNumber", fontWeight = FontWeight.SemiBold)
             Text("Date: $invoiceDate")
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("Invoice type", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(top = 6.dp)
+            ) {
+                listOf("B2C", "B2B").forEach { type ->
+                    FilterChip(
+                        selected = normalizeInvoiceType(draft.invoiceType) == type,
+                        onClick = { draft.invoiceType = type },
+                        label = { Text(type) }
+                    )
+                }
+            }
             if (draft.editingInvoiceNumber != null) {
                 Text("Editing Existing Invoice", color = ComposeColor(0xFF5E6840), fontWeight = FontWeight.SemiBold)
             }
@@ -499,9 +608,16 @@ fun InvoiceScreen(
         modifier = Modifier.fillMaxWidth(),
         value = if (selectedCustomer != null) selectedCustomer!!.name else customerSearch,
         onValueChange = {
-            selectedCustomer = null
-            customerSearch = it
-            customerSuggestionsVisible = true
+            if (selectedCustomer != null) {
+                // Allow invoice-specific name edits while preserving selected customer's phone.
+                selectedCustomer = selectedCustomer!!.copy(name = it)
+                customerSearch = it
+                customerSuggestionsVisible = false
+            } else {
+                selectedCustomer = null
+                customerSearch = it
+                customerSuggestionsVisible = true
+            }
         },
         label = { Text("Search customer") },
         keyboardOptions = KeyboardOptions(
@@ -551,7 +667,7 @@ fun InvoiceScreen(
                     TextButton(
                         onClick = {
                             productSearch = product.name
-                            priceInput = product.defaultPrice.toString()
+                            priceInput = product.defaultPrice.roundToInt().toString()
                             productSuggestionsVisible = false
                         },
                         modifier = Modifier.fillMaxWidth()
@@ -567,20 +683,20 @@ fun InvoiceScreen(
         OutlinedTextField(
             modifier = Modifier.fillMaxWidth(),
             value = quantityInput,
-            onValueChange = { quantityInput = it },
+            onValueChange = { quantityInput = it.filter { ch -> ch.isDigit() } },
             label = { Text("Quantity") },
             keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Decimal,
+                keyboardType = KeyboardType.Number,
                 imeAction = ImeAction.Next
             )
         )
         OutlinedTextField(
             modifier = Modifier.fillMaxWidth(),
             value = priceInput,
-            onValueChange = { priceInput = it },
+            onValueChange = { priceInput = it.filter { ch -> ch.isDigit() } },
             label = { Text("Unit price") },
             keyboardOptions = KeyboardOptions(
-                keyboardType = KeyboardType.Decimal,
+                keyboardType = KeyboardType.Number,
                 imeAction = ImeAction.Next
             )
         )
@@ -594,14 +710,17 @@ fun InvoiceScreen(
     Button(
         modifier = Modifier.padding(top = 8.dp),
         onClick = {
-            val quantity = quantityInput.toDoubleOrNull()
-            val price = priceInput.toDoubleOrNull()
-            if (productSearch.isNotBlank() && quantity != null && price != null) {
-                lineItems.add(InvoiceLineItem(productSearch.trim(), quantity, price))
+            val quantity = quantityInput.toIntOrNull()
+            val price = priceInput.toIntOrNull()
+            if (productSearch.isNotBlank() && quantity != null && quantity > 0 && price != null && price >= 0) {
+                lineItems.add(InvoiceLineItem(productSearch.trim(), quantity.toDouble(), price.toDouble()))
                 productSearch = ""
                 productSuggestionsVisible = false
                 quantityInput = "1"
                 priceInput = ""
+                focusManager.clearFocus()
+                keyboardController?.hide()
+                Toast.makeText(context, "Item added", Toast.LENGTH_SHORT).show()
             }
         }
     ) { Text("Add Item") }
@@ -617,24 +736,45 @@ fun InvoiceScreen(
         lineItems.forEachIndexed { index, item ->
             Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), shape = RoundedCornerShape(12.dp)) {
                 Column(modifier = Modifier.padding(10.dp)) {
-                    Text(item.productName, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = item.productName,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Qty: ${item.quantity} x ₹${money(item.unitPrice)} = ₹${money(item.lineTotal())}")
+                        Text(
+                            text = "Qty: ${item.normalizedQuantity()} x ₹${money(item.unitPrice)} = ₹${money(item.lineTotal())}",
+                            modifier = Modifier.weight(1f).padding(end = 4.dp),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                         Row {
-                            IconButton(onClick = {
-                                editIndex = index
-                                editName = item.productName
-                                editQty = item.quantity.toString()
-                                editPrice = item.unitPrice.toString()
-                            }) {
+                            IconButton(
+                                onClick = {
+                                    editIndex = index
+                                    editName = item.productName
+                                    editQty = item.normalizedQuantity().toString()
+                                    editPrice = item.unitPrice.roundToInt().toString()
+                                },
+                                modifier = Modifier.size(48.dp)
+                            ) {
                                 Icon(Icons.Default.Edit, contentDescription = "Edit line item")
                             }
-                            IconButton(onClick = { lineItems.removeAt(index) }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete line item")
+                            IconButton(
+                                onClick = { lineItems.removeAt(index) },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Delete,
+                                    contentDescription = "Delete line item",
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
                             }
                         }
                     }
@@ -646,10 +786,10 @@ fun InvoiceScreen(
     OutlinedTextField(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         value = shippingChargesInput,
-        onValueChange = { shippingChargesInput = it },
+        onValueChange = { shippingChargesInput = it.filter { ch -> ch.isDigit() } },
         label = { Text("Shipping Charges (Optional)") },
         keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Decimal,
+            keyboardType = KeyboardType.Number,
             imeAction = ImeAction.Done
         )
     )
@@ -678,14 +818,17 @@ fun InvoiceScreen(
     )
     Spacer(modifier = Modifier.height(16.dp))
     }
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(14.dp)
-    ) {
-        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(
+    if (!isKeyboardVisible) {
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            onClick = {
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                modifier = Modifier.weight(1f),
+                enabled = lineItems.isNotEmpty(),
+                onClick = {
                 if (lineItems.isNotEmpty()) {
                     val invoice = InvoiceData(
                         invoiceNumber = invoiceNumber,
@@ -694,7 +837,8 @@ fun InvoiceScreen(
                         customerPhone = selectedCustomer?.phone ?: "",
                         items = lineItems.toList(),
                         shippingCharges = shippingCharges,
-                        total = total
+                        total = total,
+                        invoiceType = normalizeInvoiceType(draft.invoiceType)
                     )
                     val isUpdate = draft.editingInvoiceNumber != null
                     lastGeneratedFile = onSavePdf(invoice, isUpdate)
@@ -710,12 +854,15 @@ fun InvoiceScreen(
                     quantityInput = "1"
                     priceInput = ""
                     shippingChargesInput = ""
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
                 }
             }
-        ) { Text("Generate Invoice PDF") }
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = {
+            ) { Text("Generate") }
+            Button(
+                modifier = Modifier.weight(1f),
+                enabled = lineItems.isNotEmpty(),
+                onClick = {
                 if (lineItems.isNotEmpty()) {
                     val invoice = InvoiceData(
                         invoiceNumber = invoiceNumber,
@@ -724,7 +871,8 @@ fun InvoiceScreen(
                         customerPhone = selectedCustomer?.phone ?: "",
                         items = lineItems.toList(),
                         shippingCharges = shippingCharges,
-                        total = total
+                        total = total,
+                        invoiceType = normalizeInvoiceType(draft.invoiceType)
                     )
                     if (invoice.customerPhone.isBlank()) {
                         Toast.makeText(context, "Select customer with phone number to share on WhatsApp", Toast.LENGTH_SHORT).show()
@@ -744,16 +892,28 @@ fun InvoiceScreen(
                     quantityInput = "1"
                     priceInput = ""
                     shippingChargesInput = ""
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
                 }
             }
-        ) {
-            Icon(Icons.Default.Share, contentDescription = null)
-            Spacer(modifier = Modifier.size(4.dp))
-            Text("Generate & Share WhatsApp")
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Generate &")
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(Icons.Default.Share, contentDescription = "Share")
+                }
+            }
+            }
         }
     }
     }
-    Spacer(modifier = Modifier.height(8.dp))
+    if (!isKeyboardVisible) {
+        Spacer(modifier = Modifier.height(8.dp))
+    }
 
     draft.selectedCustomerName = selectedCustomer?.name ?: ""
     draft.selectedCustomerPhone = selectedCustomer?.phone ?: ""
@@ -778,22 +938,22 @@ fun InvoiceScreen(
                     )
                     OutlinedTextField(
                         value = editQty,
-                        onValueChange = { editQty = it },
+                        onValueChange = { editQty = it.filter { ch -> ch.isDigit() } },
                         label = { Text("Quantity") }
                     )
                     OutlinedTextField(
                         value = editPrice,
-                        onValueChange = { editPrice = it },
+                        onValueChange = { editPrice = it.filter { ch -> ch.isDigit() } },
                         label = { Text("Unit price") }
                     )
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val qty = editQty.toDoubleOrNull()
-                    val unit = editPrice.toDoubleOrNull()
-                    if (qty != null && unit != null && editName.isNotBlank() && editIndex in lineItems.indices) {
-                        lineItems[editIndex] = InvoiceLineItem(editName.trim(), qty, unit)
+                    val qty = editQty.toIntOrNull()
+                    val unit = editPrice.toIntOrNull()
+                    if (qty != null && qty > 0 && unit != null && unit >= 0 && editName.isNotBlank() && editIndex in lineItems.indices) {
+                        lineItems[editIndex] = InvoiceLineItem(editName.trim(), qty.toDouble(), unit.toDouble())
                         editIndex = -1
                     }
                 }) { Text("Save") }
@@ -813,11 +973,35 @@ fun ProductScreen(
     context: Context,
     onExport: () -> Unit,
     onAdd: (String, Double) -> Unit,
+    onImport: (List<Product>) -> Unit,
     onDelete: (Int) -> Unit
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     var name by remember { mutableStateOf("") }
     var price by remember { mutableStateOf("") }
     var duplicateNameError by remember { mutableStateOf(false) }
+    var pendingAdd by remember { mutableStateOf<Product?>(null) }
+    var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var showImportConfirm by remember { mutableStateOf(false) }
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                if (json.isNullOrBlank()) {
+                    Toast.makeText(context, "Invalid backup file", Toast.LENGTH_SHORT).show()
+                    return@rememberLauncherForActivityResult
+                }
+                val imported = BillingStorage(context).importProductsJson(json)
+                onImport(imported)
+                Toast.makeText(context, "Products backup imported", Toast.LENGTH_SHORT).show()
+            } catch (_: Exception) {
+                Toast.makeText(context, "Failed to import products backup", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Text("Add Product", fontSize = 22.sp, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(12.dp))
@@ -847,19 +1031,19 @@ fun ProductScreen(
     }
             OutlinedTextField(
                 value = price,
-                onValueChange = { price = it },
+                onValueChange = { price = it.filter { ch -> ch.isDigit() } },
                 label = { Text("Default unit price") },
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Decimal,
+                    keyboardType = KeyboardType.Number,
                     imeAction = ImeAction.Done
                 )
             )
             Button(
         modifier = Modifier.fillMaxWidth(),
         onClick = {
-            val p = price.toDoubleOrNull()
-            if (name.isNotBlank() && p != null) {
+            val p = price.toIntOrNull()
+            if (name.isNotBlank() && p != null && p >= 0) {
                 val normalized = name.trim().lowercase(Locale.getDefault())
                 val duplicateExists = products.any { it.name.trim().lowercase(Locale.getDefault()) == normalized }
                 if (duplicateExists) {
@@ -867,16 +1051,22 @@ fun ProductScreen(
                     Toast.makeText(context, "Duplicate product name not allowed", Toast.LENGTH_SHORT).show()
                     return@Button
                 }
-                onAdd(name, p)
-                name = ""
-                price = ""
-                duplicateNameError = false
+                pendingAdd = Product(name.trim(), p.toDouble())
             }
         }
     ) { Text("Save Product") }
         }
     }
-    TextButton(onClick = onExport) { Text("Export Products Backup") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = onExport,
+            modifier = Modifier.weight(1f)
+        ) { Text("Export Backup") }
+        Button(
+            onClick = { showImportConfirm = true },
+            modifier = Modifier.weight(1f)
+        ) { Text("Import Backup") }
+    }
 
     Spacer(modifier = Modifier.height(12.dp))
     LazyColumn {
@@ -886,11 +1076,85 @@ fun ProductScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("${product.name} - ₹${money(product.defaultPrice)}")
-                TextButton(onClick = { onDelete(index) }) { Text("Delete") }
+                Text(
+                    text = "${product.name} - ₹${money(product.defaultPrice)}",
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                IconButton(
+                    onClick = { pendingDeleteIndex = index },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Delete product",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
             }
             HorizontalDivider()
         }
+    }
+
+    if (pendingAdd != null) {
+        val product = pendingAdd!!
+        AlertDialog(
+            onDismissRequest = { pendingAdd = null },
+            title = { Text("Confirm Product Add") },
+            text = { Text("Add product '${product.name}' with default price ₹${money(product.defaultPrice)}?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onAdd(product.name, product.defaultPrice)
+                    name = ""
+                    price = ""
+                    duplicateNameError = false
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    Toast.makeText(context, "Product saved", Toast.LENGTH_SHORT).show()
+                    pendingAdd = null
+                }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingAdd = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (pendingDeleteIndex != null && pendingDeleteIndex in products.indices) {
+        val idx = pendingDeleteIndex!!
+        val product = products[idx]
+        AlertDialog(
+            onDismissRequest = { pendingDeleteIndex = null },
+            title = { Text("Confirm Product Delete") },
+            text = { Text("Delete product '${product.name}'?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(idx)
+                    pendingDeleteIndex = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteIndex = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showImportConfirm) {
+        AlertDialog(
+            onDismissRequest = { showImportConfirm = false },
+            title = { Text("Import Products Backup") },
+            text = { Text("This will replace your current products list. Continue?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportConfirm = false
+                    importLauncher.launch(arrayOf("application/json", "text/plain"))
+                }) { Text("Import") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -900,13 +1164,87 @@ fun CustomerScreen(
     context: Context,
     onExport: () -> Unit,
     onAdd: (String, String, String) -> Unit,
+    onImport: (List<Customer>) -> Unit,
     onDelete: (Int) -> Unit
 ) {
+    fun launchPhoneContactPicker(launcher: androidx.activity.result.ActivityResultLauncher<Intent>) {
+        val pickIntent = Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
+        launcher.launch(pickIntent)
+    }
+
     var name by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var gst by remember { mutableStateOf("") }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
     var showValidation by remember { mutableStateOf(false) }
     var duplicatePhoneError by remember { mutableStateOf(false) }
+    var pendingAdd by remember { mutableStateOf<Customer?>(null) }
+    var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var showImportConfirm by remember { mutableStateOf(false) }
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                if (json.isNullOrBlank()) {
+                    Toast.makeText(context, "Invalid backup file", Toast.LENGTH_SHORT).show()
+                    return@rememberLauncherForActivityResult
+                }
+                val imported = BillingStorage(context).importCustomersJson(json)
+                onImport(imported)
+                Toast.makeText(context, "Customers backup imported", Toast.LENGTH_SHORT).show()
+            } catch (_: Exception) {
+                Toast.makeText(context, "Failed to import customers backup", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    val contactPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+        val uri = result.data?.data ?: return@rememberLauncherForActivityResult
+        try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER
+                ),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val nameIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+                    val numberIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
+                    val pickedName = if (nameIndex >= 0) cursor.getString(nameIndex).orEmpty() else ""
+                    val pickedNumber = if (numberIndex >= 0) cursor.getString(numberIndex).orEmpty() else ""
+                    val normalized = normalizeWhatsAppPhone(pickedNumber)
+                    if (normalized == null) {
+                        Toast.makeText(context, "Selected contact has invalid phone", Toast.LENGTH_SHORT).show()
+                        return@use
+                    }
+                    name = if (pickedName.isNotBlank()) pickedName else name
+                    phone = formatPhoneForDisplay(normalized)
+                    duplicatePhoneError = false
+                    showValidation = false
+                }
+            }
+        } catch (_: Exception) {
+            Toast.makeText(context, "Failed to read selected contact", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            launchPhoneContactPicker(contactPickerLauncher)
+        } else {
+            Toast.makeText(context, "Contacts permission denied", Toast.LENGTH_SHORT).show()
+        }
+    }
     val nameError = showValidation && name.isBlank()
     val phoneError = showValidation && (phone.isBlank() || normalizeWhatsAppPhone(phone) == null)
 
@@ -968,6 +1306,20 @@ fun CustomerScreen(
     }
             OutlinedTextField(value = gst, onValueChange = { gst = it }, label = { Text("GST (Optional)") }, modifier = Modifier.fillMaxWidth())
             Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.READ_CONTACTS
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (hasPermission) {
+                        launchPhoneContactPicker(contactPickerLauncher)
+                    } else {
+                        contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                    }
+                }
+            ) { Text("Pick from Contacts") }
+            Button(
         modifier = Modifier.fillMaxWidth(),
         onClick = {
             showValidation = true
@@ -985,12 +1337,11 @@ fun CustomerScreen(
                     Toast.makeText(context, "Duplicate phone number not allowed", Toast.LENGTH_SHORT).show()
                     return@Button
                 }
-                onAdd(name, formatPhoneForDisplay(normalized), gst)
-                name = ""
-                phone = ""
-                gst = ""
-                showValidation = false
-                duplicatePhoneError = false
+                pendingAdd = Customer(
+                    name = name.trim(),
+                    phone = formatPhoneForDisplay(normalized),
+                    gst = gst.trim()
+                )
             } else {
                 Toast.makeText(context, "Name and phone number are mandatory", Toast.LENGTH_SHORT).show()
             }
@@ -998,7 +1349,16 @@ fun CustomerScreen(
     ) { Text("Save Customer") }
         }
     }
-    TextButton(onClick = onExport) { Text("Export Customers Backup") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            onClick = onExport,
+            modifier = Modifier.weight(1f)
+        ) { Text("Export Backup") }
+        Button(
+            onClick = { showImportConfirm = true },
+            modifier = Modifier.weight(1f)
+        ) { Text("Import Backup") }
+    }
 
     Spacer(modifier = Modifier.height(12.dp))
     LazyColumn {
@@ -1008,11 +1368,87 @@ fun CustomerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("${customer.name} - ${customer.phone}")
-                TextButton(onClick = { onDelete(index) }) { Text("Delete") }
+                Text(
+                    text = "${customer.name} - ${customer.phone}",
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis
+                )
+                IconButton(
+                    onClick = { pendingDeleteIndex = index },
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Delete customer",
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
             }
             HorizontalDivider()
         }
+    }
+
+    if (pendingAdd != null) {
+        val customer = pendingAdd!!
+        AlertDialog(
+            onDismissRequest = { pendingAdd = null },
+            title = { Text("Confirm Customer Add") },
+            text = { Text("Add customer '${customer.name}' with phone ${customer.phone}?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onAdd(customer.name, customer.phone, customer.gst)
+                    name = ""
+                    phone = ""
+                    gst = ""
+                    showValidation = false
+                    duplicatePhoneError = false
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    Toast.makeText(context, "Customer saved", Toast.LENGTH_SHORT).show()
+                    pendingAdd = null
+                }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingAdd = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (pendingDeleteIndex != null && pendingDeleteIndex in customers.indices) {
+        val idx = pendingDeleteIndex!!
+        val customer = customers[idx]
+        AlertDialog(
+            onDismissRequest = { pendingDeleteIndex = null },
+            title = { Text("Confirm Customer Delete") },
+            text = { Text("Delete customer '${customer.name}' (${customer.phone})?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(idx)
+                    pendingDeleteIndex = null
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteIndex = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showImportConfirm) {
+        AlertDialog(
+            onDismissRequest = { showImportConfirm = false },
+            title = { Text("Import Customers Backup") },
+            text = { Text("This will replace your current customers list. Continue?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportConfirm = false
+                    importLauncher.launch(arrayOf("application/json", "text/plain"))
+                }) { Text("Import") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -1026,6 +1462,8 @@ fun InvoiceHistoryScreen(
     onDeleteInvoice: (InvoiceRecord) -> Unit
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val customerOptions = buildList {
         add("All Customers")
         addAll(records.map { it.customerName.ifBlank { "Walk-in Customer" } }.distinct().sorted())
@@ -1039,12 +1477,109 @@ fun InvoiceHistoryScreen(
     var dateExpanded by remember { mutableStateOf(false) }
     var paymentExpanded by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<InvoiceRecord?>(null) }
+    var pendingPaymentChange by remember { mutableStateOf<Pair<InvoiceRecord, Boolean>?>(null) }
     var editingRecord by remember { mutableStateOf<InvoiceRecord?>(null) }
     var editName by remember { mutableStateOf("") }
     var editPhone by remember { mutableStateOf("") }
     var editShipping by remember { mutableStateOf("") }
+    var editInvoiceType by remember { mutableStateOf("B2C") }
     val editItems = remember { mutableStateListOf<InvoiceLineItem>() }
+    val editQtyInputs = remember { mutableStateMapOf<Int, String>() }
+    val editUnitInputs = remember { mutableStateMapOf<Int, String>() }
     var activeProductIndex by remember { mutableStateOf(-1) }
+    var pendingFocusItemIndex by remember { mutableStateOf(-1) }
+    var showSaveEditConfirm by remember { mutableStateOf(false) }
+
+    fun saveEditedInvoice(): Boolean {
+        val record = editingRecord ?: return false
+        val shipping = (editShipping.toIntOrNull() ?: 0).toDouble()
+        val hasInvalidItems = editItems.isEmpty() || editItems.any {
+            it.productName.isBlank() || it.normalizedQuantity() <= 0 || it.unitPrice < 0.0
+        }
+        if (hasInvalidItems) {
+            Toast.makeText(context, "Every line item must have product, quantity > 0, and valid price", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        val sanitizedItems = editItems.map {
+            InvoiceLineItem(
+                it.productName.trim(),
+                it.normalizedQuantity().toDouble(),
+                it.unitPrice.roundToInt().coerceAtLeast(0).toDouble()
+            )
+        }
+        val normalizedPhone = if (editPhone.isBlank()) "" else (normalizeWhatsAppPhone(editPhone) ?: run {
+            Toast.makeText(context, "Enter valid 10-digit phone number", Toast.LENGTH_SHORT).show()
+            return false
+        })
+        val displayPhone = if (normalizedPhone.isNotBlank()) formatPhoneForDisplay(normalizedPhone) else ""
+        val newTotal = sanitizedItems.sumOf { it.lineTotal() } + shipping
+        val updated = record.copy(
+            customerName = editName.ifBlank { record.customerName },
+            customerPhone = displayPhone,
+            items = sanitizedItems,
+            shippingCharges = shipping,
+            total = newTotal,
+            invoiceType = normalizeInvoiceType(editInvoiceType)
+        )
+        // Regenerate PDF file so updated invoice data is reflected.
+        val newPdf = InvoicePdfGenerator.createInvoicePdf(
+            context,
+            InvoiceData(
+                invoiceNumber = updated.invoiceNumber,
+                invoiceDate = updated.invoiceDate,
+                customerName = updated.customerName,
+                customerPhone = updated.customerPhone,
+                items = updated.items,
+                shippingCharges = updated.shippingCharges,
+                total = updated.total,
+                invoiceType = updated.invoiceType
+            )
+        )
+        if (newPdf == null) {
+            Toast.makeText(context, "Failed to regenerate updated invoice PDF", Toast.LENGTH_SHORT).show()
+            return false
+        }
+
+        // Persist updated invoice to a unique file to avoid stale viewer cache on same URI/path.
+        val oldPdf = File(record.filePath)
+        val updatedFile = File(
+            newPdf.parentFile ?: oldPdf.parentFile ?: context.filesDir,
+            "Invoice_${record.invoiceNumber}_${System.currentTimeMillis()}.pdf"
+        )
+        val finalFile = try {
+            if (newPdf.absolutePath == updatedFile.absolutePath) {
+                newPdf
+            } else {
+                newPdf.copyTo(updatedFile, overwrite = true)
+            }
+        } catch (_: Exception) {
+            newPdf
+        }
+
+        // Remove temporary generated file if we copied to a different unique file.
+        if (newPdf.absolutePath != finalFile.absolutePath && newPdf.exists()) {
+            newPdf.delete()
+        }
+
+        // First switch record to the new updated invoice file.
+        onEditInvoice(updated.copy(filePath = finalFile.absolutePath))
+
+        // Finally delete old invoice file if it is different.
+        if (oldPdf.exists() && oldPdf.absolutePath != finalFile.absolutePath) {
+            val oldDeleted = oldPdf.delete()
+            if (!oldDeleted) {
+                Toast.makeText(context, "Invoice updated, but old invoice deletion failed", Toast.LENGTH_SHORT).show()
+                editingRecord = null
+                showSaveEditConfirm = false
+                return true
+            }
+        }
+
+        Toast.makeText(context, "Invoice updated", Toast.LENGTH_SHORT).show()
+        editingRecord = null
+        showSaveEditConfirm = false
+        return true
+    }
 
     val filtered = records.filter { record ->
         val customerMatch = customerFilter == "All Customers" || record.customerName.ifBlank { "Walk-in Customer" } == customerFilter
@@ -1105,7 +1640,9 @@ fun InvoiceHistoryScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(tileColor, RoundedCornerShape(10.dp))
-                            .clickable { onUpdateStatus(record.invoiceNumber, !record.paymentReceived) }
+                            .clickable {
+                                pendingPaymentChange = record to !record.paymentReceived
+                            }
                             .padding(8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
@@ -1115,7 +1652,7 @@ fun InvoiceHistoryScreen(
                             color = if (record.paymentReceived) ComposeColor(0xFF1E7E34) else ComposeColor(0xFFB00020),
                             fontWeight = FontWeight.SemiBold
                         )
-                        IconButton(onClick = { onUpdateStatus(record.invoiceNumber, !record.paymentReceived) }) {
+                        IconButton(onClick = { pendingPaymentChange = record to !record.paymentReceived }) {
                             Icon(
                                 if (record.paymentReceived) Icons.Default.CheckCircle else Icons.Default.Schedule,
                                 contentDescription = "Toggle payment status"
@@ -1123,7 +1660,26 @@ fun InvoiceHistoryScreen(
                         }
                     }
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text("Invoice: ${record.invoiceNumber}", fontWeight = FontWeight.Bold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Invoice: ${record.invoiceNumber}", fontWeight = FontWeight.Bold)
+                        val typeLabel = normalizeInvoiceType(record.invoiceType)
+                        Text(
+                            typeLabel,
+                            modifier = Modifier
+                                .background(
+                                    if (typeLabel == "B2B") ComposeColor(0xFFE3F2FD) else ComposeColor(0xFFFFF3E0),
+                                    RoundedCornerShape(6.dp)
+                                )
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = if (typeLabel == "B2B") ComposeColor(0xFF1565C0) else ComposeColor(0xFFE65100)
+                        )
+                    }
                     Text("Date: ${record.invoiceDate}")
                     Text("Customer: ${record.customerName}")
                     Text("Total: ₹${money(record.total)}")
@@ -1134,11 +1690,18 @@ fun InvoiceHistoryScreen(
                         IconButton(
                             onClick = {
                                 editingRecord = record
+                                editInvoiceType = normalizeInvoiceType(record.invoiceType)
                                 editName = record.customerName
                                 editPhone = record.customerPhone
-                                editShipping = if (record.shippingCharges > 0.0) money(record.shippingCharges) else ""
+                                editShipping = if (record.shippingCharges > 0.0) record.shippingCharges.roundToInt().toString() else ""
                                 editItems.clear()
                                 editItems.addAll(record.items.map { InvoiceLineItem(it.productName, it.quantity, it.unitPrice) })
+                                editQtyInputs.clear()
+                                editUnitInputs.clear()
+                                editItems.forEachIndexed { idx, item ->
+                                    editQtyInputs[idx] = item.normalizedQuantity().toString()
+                                    editUnitInputs[idx] = item.unitPrice.roundToInt().toString()
+                                }
                             },
                             modifier = Modifier.size(44.dp)
                         ) {
@@ -1169,12 +1732,42 @@ fun InvoiceHistoryScreen(
                             Icon(Icons.Default.Share, contentDescription = "Share invoice via WhatsApp")
                         }
                         IconButton(onClick = { pendingDelete = record }, modifier = Modifier.size(44.dp)) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete invoice")
+                            Icon(
+                                Icons.Default.Delete,
+                                contentDescription = "Delete invoice",
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    if (pendingPaymentChange != null) {
+        val (payRecord, newReceived) = pendingPaymentChange!!
+        AlertDialog(
+            onDismissRequest = { pendingPaymentChange = null },
+            title = { Text("Change payment status?") },
+            text = {
+                Text(
+                    if (newReceived) {
+                        "Mark invoice ${payRecord.invoiceNumber} as payment received?"
+                    } else {
+                        "Mark invoice ${payRecord.invoiceNumber} as payment pending?"
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onUpdateStatus(payRecord.invoiceNumber, newReceived)
+                    pendingPaymentChange = null
+                }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingPaymentChange = null }) { Text("Cancel") }
+            }
+        )
     }
 
     if (pendingDelete != null) {
@@ -1196,10 +1789,46 @@ fun InvoiceHistoryScreen(
 
     if (editingRecord != null) {
         AlertDialog(
-            onDismissRequest = { editingRecord = null },
+            onDismissRequest = {
+                focusManager.clearFocus()
+                keyboardController?.hide()
+                editingRecord = null
+                showSaveEditConfirm = false
+            },
             title = { Text("Edit Invoice") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val dialogScrollState = rememberScrollState()
+                LaunchedEffect(pendingFocusItemIndex, editItems.size) {
+                    if (pendingFocusItemIndex >= 0) {
+                        // Bring newly added item into view before requesting field focus.
+                        delay(100)
+                        dialogScrollState.animateScrollTo(dialogScrollState.maxValue)
+                    }
+                }
+                // Final pass: clear focus when tap isn't consumed (e.g. labels, padding). TextFields consume taps.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent(PointerEventPass.Final)
+                                    if (event.type == PointerEventType.Release &&
+                                        event.changes.all { !it.isConsumed }
+                                    ) {
+                                        focusManager.clearFocus(force = true)
+                                        keyboardController?.hide()
+                                    }
+                                }
+                            }
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(dialogScrollState),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                     OutlinedTextField(
                         value = editName,
                         onValueChange = { editName = it },
@@ -1212,9 +1841,20 @@ fun InvoiceHistoryScreen(
                     )
                     OutlinedTextField(
                         value = editShipping,
-                        onValueChange = { editShipping = it },
-                        label = { Text("Shipping Charges") }
+                        onValueChange = { editShipping = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Shipping Charges") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                     )
+                    Text("Invoice type", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("B2C", "B2B").forEach { type ->
+                            FilterChip(
+                                selected = normalizeInvoiceType(editInvoiceType) == type,
+                                onClick = { editInvoiceType = type },
+                                label = { Text(type) }
+                            )
+                        }
+                    }
                     Text(
                         "Leave shipping empty or 0 to remove it.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1222,13 +1862,20 @@ fun InvoiceHistoryScreen(
                     )
                     Text("Line Items", fontWeight = FontWeight.SemiBold)
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                            .verticalScroll(rememberScrollState()),
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         editItems.forEachIndexed { index, item ->
+                            val productFocusRequester = remember { FocusRequester() }
+                            LaunchedEffect(pendingFocusItemIndex) {
+                                if (pendingFocusItemIndex == index) {
+                                    // Delay a frame so the new text field is in composition before requesting focus.
+                                    delay(120)
+                                    productFocusRequester.requestFocus()
+                                    keyboardController?.show()
+                                    pendingFocusItemIndex = -1
+                                }
+                            }
                             Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp)) {
                                 Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     OutlinedTextField(
@@ -1238,7 +1885,9 @@ fun InvoiceHistoryScreen(
                                             activeProductIndex = index
                                         },
                                         label = { Text("Product") },
-                                        modifier = Modifier.fillMaxWidth()
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .focusRequester(productFocusRequester)
                                     )
                                     val matches = if (activeProductIndex == index) {
                                         products.filter { it.name.contains(item.productName, ignoreCase = true) }.take(5)
@@ -1252,7 +1901,10 @@ fun InvoiceHistoryScreen(
                                                 matches.forEach { p ->
                                                     TextButton(
                                                         onClick = {
-                                                            editItems[index] = item.copy(productName = p.name, unitPrice = p.defaultPrice)
+                                                            editItems[index] = item.copy(
+                                                                productName = p.name,
+                                                                unitPrice = p.defaultPrice.roundToInt().toDouble()
+                                                            )
                                                             activeProductIndex = -1
                                                         },
                                                         modifier = Modifier.fillMaxWidth()
@@ -1265,100 +1917,138 @@ fun InvoiceHistoryScreen(
                                     }
                                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         OutlinedTextField(
-                                            value = item.quantity.toString(),
+                                            value = editQtyInputs[index] ?: item.normalizedQuantity().toString(),
                                             onValueChange = { value ->
-                                                val qty = value.toDoubleOrNull()
-                                                if (qty != null) {
-                                                    editItems[index] = item.copy(quantity = qty)
+                                                val filtered = value.filter { ch -> ch.isDigit() }
+                                                editQtyInputs[index] = filtered
+                                                if (filtered.isEmpty()) {
+                                                    editItems[index] = item.copy(quantity = 0.0)
+                                                } else {
+                                                    val qty = filtered.toIntOrNull()
+                                                    if (qty != null && qty > 0) {
+                                                        editItems[index] = item.copy(quantity = qty.toDouble())
+                                                    }
                                                 }
                                             },
                                             label = { Text("Qty") },
-                                            modifier = Modifier.weight(1f)
+                                            modifier = Modifier.weight(1f),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                                         )
                                         OutlinedTextField(
-                                            value = item.unitPrice.toString(),
+                                            value = editUnitInputs[index] ?: item.unitPrice.roundToInt().toString(),
                                             onValueChange = { value ->
-                                                val price = value.toDoubleOrNull()
-                                                if (price != null) {
-                                                    editItems[index] = item.copy(unitPrice = price)
+                                                val filtered = value.filter { ch -> ch.isDigit() }
+                                                editUnitInputs[index] = filtered
+                                                if (filtered.isEmpty()) {
+                                                    editItems[index] = item.copy(unitPrice = 0.0)
+                                                } else {
+                                                    val price = filtered.toIntOrNull()
+                                                    if (price != null && price >= 0) {
+                                                        editItems[index] = item.copy(unitPrice = price.toDouble())
+                                                    }
                                                 }
                                             },
                                             label = { Text("Unit Price") },
-                                            modifier = Modifier.weight(1f)
+                                            modifier = Modifier.weight(1f),
+                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
                                         )
                                         IconButton(
-                                            onClick = { editItems.removeAt(index) },
+                                            onClick = {
+                                                editItems.removeAt(index)
+                                                editQtyInputs.clear()
+                                                editUnitInputs.clear()
+                                                editItems.forEachIndexed { idx, current ->
+                                                    editQtyInputs[idx] = current.normalizedQuantity().toString()
+                                                    editUnitInputs[idx] = current.unitPrice.roundToInt().toString()
+                                                }
+                                            },
                                             modifier = Modifier.size(42.dp)
                                         ) {
-                                            Icon(Icons.Default.Delete, contentDescription = "Remove item")
+                                            Icon(
+                                                Icons.Default.Delete,
+                                                contentDescription = "Remove item",
+                                                tint = MaterialTheme.colorScheme.secondary
+                                            )
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    TextButton(onClick = {
+                    Button(onClick = {
                         editItems.add(InvoiceLineItem(productName = "", quantity = 1.0, unitPrice = 0.0))
+                        editQtyInputs[editItems.lastIndex] = "1"
+                        editUnitInputs[editItems.lastIndex] = "0"
+                        pendingFocusItemIndex = editItems.lastIndex
                     }) {
                         Text("Add Item")
+                    }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    val record = editingRecord ?: return@TextButton
-                    val shipping = editShipping.toDoubleOrNull() ?: 0.0
-                    val sanitizedItems = editItems
-                        .filter { it.productName.isNotBlank() && it.quantity > 0.0 && it.unitPrice >= 0.0 }
-                        .map { InvoiceLineItem(it.productName.trim(), it.quantity, it.unitPrice) }
-                    if (sanitizedItems.isEmpty()) {
-                        Toast.makeText(context, "Add at least one valid line item", Toast.LENGTH_SHORT).show()
-                        return@TextButton
-                    }
-                    val normalizedPhone = if (editPhone.isBlank()) "" else (normalizeWhatsAppPhone(editPhone) ?: run {
-                        Toast.makeText(context, "Enter valid 10-digit phone number", Toast.LENGTH_SHORT).show()
-                        return@TextButton
-                    })
-                    val displayPhone = if (normalizedPhone.isNotBlank()) formatPhoneForDisplay(normalizedPhone) else ""
-                    val newTotal = sanitizedItems.sumOf { it.lineTotal() } + shipping
-                    val updated = record.copy(
-                        customerName = editName.ifBlank { record.customerName },
-                        customerPhone = displayPhone,
-                        items = sanitizedItems,
-                        shippingCharges = shipping,
-                        total = newTotal
-                    )
-                    // Regenerate PDF file so updated invoice data is reflected.
-                    val newPdf = InvoicePdfGenerator.createInvoicePdf(
-                        context,
-                        InvoiceData(
-                            invoiceNumber = updated.invoiceNumber,
-                            invoiceDate = updated.invoiceDate,
-                            customerName = updated.customerName,
-                            customerPhone = updated.customerPhone,
-                            items = updated.items,
-                            shippingCharges = updated.shippingCharges,
-                            total = updated.total
-                        )
-                    )
-                    onEditInvoice(
-                        if (newPdf != null) updated.copy(filePath = newPdf.absolutePath) else updated
-                    )
-                    editingRecord = null
+                Button(onClick = {
+                    showSaveEditConfirm = true
                 }) { Text("Save") }
             },
             dismissButton = {
-                TextButton(onClick = { editingRecord = null }) { Text("Cancel") }
+                Button(onClick = {
+                    editingRecord = null
+                    showSaveEditConfirm = false
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showSaveEditConfirm && editingRecord != null) {
+        AlertDialog(
+            onDismissRequest = { showSaveEditConfirm = false },
+            title = { Text("Confirm Invoice Update") },
+            text = { Text("Save the changes made to this invoice?") },
+            confirmButton = {
+                TextButton(onClick = { saveEditedInvoice() }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showSaveEditConfirm = false }) { Text("Cancel") }
             }
         )
     }
 }
 
 data class ReportRow(val key: String, val invoiceCount: Int, val totalSales: Double)
+data class ReportDetailRow(
+    val invoiceNumber: String,
+    val invoiceType: String,
+    val invoiceDate: String,
+    val customerName: String,
+    val mappedCustomerName: String,
+    val customerPhone: String,
+    val itemName: String,
+    val quantity: Int,
+    val unitPrice: Double,
+    val lineTotal: Double,
+    val shippingCharges: Double,
+    val invoiceTotal: Double,
+    val paymentStatus: String
+)
+
+data class ReportInvoicePdfRow(
+    val invoiceNumber: String,
+    val invoiceType: String,
+    val customerName: String,
+    val invoiceDate: String,
+    val totalItemQty: Int,
+    val shippingCharges: Double,
+    val invoiceTotal: Double
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SalesReportScreen(records: List<InvoiceRecord>) {
+fun SalesReportScreen(
+    records: List<InvoiceRecord>,
+    customers: List<Customer>,
+    onReportExported: (File) -> Unit
+) {
     val context = LocalContext.current
     val reportTypeOptions = listOf("Month-wise", "Customer-wise")
     val formatOptions = listOf("PDF", "Excel")
@@ -1386,6 +2076,17 @@ fun SalesReportScreen(records: List<InvoiceRecord>) {
         monthMatch && customerMatch
     }
     val rows = buildReportRows(filtered, reportType)
+    val previewRows = remember(records) {
+        val now = Instant.now().atZone(ZoneId.systemDefault())
+        val currentMonth = now.year * 12 + now.monthValue
+        val last12 = records.filter { record ->
+            if (record.createdAtMillis <= 0L) return@filter false
+            val d = Instant.ofEpochMilli(record.createdAtMillis).atZone(ZoneId.systemDefault())
+            val recordMonth = d.year * 12 + d.monthValue
+            currentMonth - recordMonth in 0..11
+        }
+        buildReportRows(last12, "Month-wise")
+    }
 
     Text("Sales Reports", fontSize = 22.sp, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(12.dp))
@@ -1423,12 +2124,12 @@ fun SalesReportScreen(records: List<InvoiceRecord>) {
     )
 
     Spacer(modifier = Modifier.height(8.dp))
-    Text("Preview", fontWeight = FontWeight.SemiBold)
-    if (rows.isEmpty()) {
-        Text("No data for selected filters.")
+    Text("Preview (Month-wise, Last 12 Months)", fontWeight = FontWeight.SemiBold)
+    if (previewRows.isEmpty()) {
+        Text("No data for the last 12 months.")
     } else {
         LazyColumn(modifier = Modifier.fillMaxWidth().height(220.dp)) {
-            itemsIndexed(rows.take(10)) { _, row ->
+            itemsIndexed(previewRows.take(12)) { _, row ->
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -1449,12 +2150,12 @@ fun SalesReportScreen(records: List<InvoiceRecord>) {
                 return@Button
             }
             val file = if (exportFormat == "PDF") {
-                createSalesReportPdf(context, reportType, monthFilter, customerFilter, rows)
+                createSalesReportPdf(context, reportType, monthFilter, customerFilter, rows, filtered)
             } else {
-                createSalesReportExcel(context, reportType, monthFilter, customerFilter, rows)
+                createSalesReportExcel(context, reportType, monthFilter, customerFilter, rows, filtered, customers)
             }
             if (file != null) {
-                Toast.makeText(context, "Saved: ${file.name}", Toast.LENGTH_LONG).show()
+                onReportExported(file)
             } else {
                 Toast.makeText(context, "Failed to export report", Toast.LENGTH_SHORT).show()
             }
@@ -1511,6 +2212,78 @@ fun buildReportRows(records: List<InvoiceRecord>, reportType: String): List<Repo
         .sortedByDescending { it.totalSales }
 }
 
+fun buildReportDetailRows(records: List<InvoiceRecord>, customers: List<Customer>): List<ReportDetailRow> {
+    val customerByPhone = customers
+        .mapNotNull { c ->
+            val normalized = normalizeWhatsAppPhone(c.phone) ?: return@mapNotNull null
+            normalized to c.name
+        }
+        .toMap()
+    return records
+        .sortedByDescending { it.createdAtMillis }
+        .flatMap { record ->
+            val status = if (record.paymentReceived) "Received" else "Pending"
+            val invType = normalizeInvoiceType(record.invoiceType)
+            val shipping = record.shippingCharges
+            val customer = record.customerName.ifBlank { "Walk-in Customer" }
+            val phone = record.customerPhone
+            val mappedName = normalizeWhatsAppPhone(phone)?.let { customerByPhone[it] }.orEmpty()
+            if (record.items.isEmpty()) {
+                listOf(
+                    ReportDetailRow(
+                        invoiceNumber = record.invoiceNumber,
+                        invoiceType = invType,
+                        invoiceDate = record.invoiceDate,
+                        customerName = customer,
+                        mappedCustomerName = mappedName,
+                        customerPhone = phone,
+                        itemName = "-",
+                        quantity = 0,
+                        unitPrice = 0.0,
+                        lineTotal = 0.0,
+                        shippingCharges = shipping,
+                        invoiceTotal = record.total,
+                        paymentStatus = status
+                    )
+                )
+            } else {
+                record.items.map { item ->
+                    ReportDetailRow(
+                        invoiceNumber = record.invoiceNumber,
+                        invoiceType = invType,
+                        invoiceDate = record.invoiceDate,
+                        customerName = customer,
+                        mappedCustomerName = mappedName,
+                        customerPhone = phone,
+                        itemName = item.productName,
+                        quantity = item.normalizedQuantity(),
+                        unitPrice = item.unitPrice,
+                        lineTotal = item.lineTotal(),
+                        shippingCharges = shipping,
+                        invoiceTotal = record.total,
+                        paymentStatus = status
+                    )
+                }
+            }
+        }
+}
+
+fun buildInvoicePdfRows(records: List<InvoiceRecord>): List<ReportInvoicePdfRow> {
+    return records
+        .sortedByDescending { it.createdAtMillis }
+        .map { record ->
+            ReportInvoicePdfRow(
+                invoiceNumber = record.invoiceNumber,
+                invoiceType = normalizeInvoiceType(record.invoiceType),
+                customerName = record.customerName.ifBlank { "Walk-in Customer" },
+                invoiceDate = record.invoiceDate,
+                totalItemQty = record.items.sumOf { it.normalizedQuantity() },
+                shippingCharges = record.shippingCharges,
+                invoiceTotal = record.total
+            )
+        }
+}
+
 fun monthKey(millis: Long): String {
     if (millis <= 0L) return "Unknown Month"
     val date = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
@@ -1525,7 +2298,28 @@ fun isWithinDays(millis: Long, days: Int): Boolean {
 }
 
 fun money(value: Double): String {
-    return BigDecimal(value).setScale(2, RoundingMode.HALF_UP).toPlainString()
+    return value.roundToInt().toString()
+}
+
+/** Normalizes persisted / UI invoice type to B2C or B2B. */
+fun normalizeInvoiceType(raw: String): String =
+    if (raw.trim().uppercase(Locale.getDefault()) == "B2B") "B2B" else "B2C"
+
+/** POI [Sheet.autoSizeColumn] often crashes on Android; use safe widths as fallback. */
+private fun Sheet.safeAutoSizeColumnsInclusive(maxColumnIndex: Int) {
+    for (i in 0..maxColumnIndex) {
+        try {
+            autoSizeColumn(i)
+            val w = getColumnWidth(i)
+            if (w > 18000) setColumnWidth(i, 18000)
+        } catch (_: Throwable) {
+            try {
+                setColumnWidth(i, 18 * 256)
+            } catch (_: Throwable) {
+                // ignore
+            }
+        }
+    }
 }
 
 class BillingStorage(context: Context) {
@@ -1541,7 +2335,7 @@ class BillingStorage(context: Context) {
         return buildList {
             for (i in 0 until arr.length()) {
                 val obj = arr.getJSONObject(i)
-                add(Product(obj.getString("name"), obj.getDouble("defaultPrice")))
+                add(Product(obj.getString("name"), obj.getDouble("defaultPrice").roundToInt().toDouble()))
             }
         }
     }
@@ -1552,7 +2346,7 @@ class BillingStorage(context: Context) {
             arr.put(
                 JSONObject().apply {
                     put("name", it.name)
-                    put("defaultPrice", it.defaultPrice)
+                    put("defaultPrice", it.defaultPrice.roundToInt())
                 }
             )
         }
@@ -1601,7 +2395,8 @@ class BillingStorage(context: Context) {
                         total = obj.getDouble("total"),
                         filePath = obj.getString("filePath"),
                         createdAtMillis = obj.optLong("createdAtMillis", parseDateToMillis(obj.getString("invoiceDate"))),
-                        paymentReceived = obj.optBoolean("paymentReceived", false)
+                        paymentReceived = obj.optBoolean("paymentReceived", false),
+                        invoiceType = normalizeInvoiceType(obj.optString("invoiceType", "B2C"))
                     )
                 )
             }
@@ -1623,6 +2418,7 @@ class BillingStorage(context: Context) {
                     put("filePath", it.filePath)
                     put("createdAtMillis", it.createdAtMillis)
                     put("paymentReceived", it.paymentReceived)
+                    put("invoiceType", normalizeInvoiceType(it.invoiceType))
                 }
             )
         }
@@ -1635,6 +2431,35 @@ class BillingStorage(context: Context) {
 
     fun exportCustomersJson(): String {
         return prefs.getString(customersKey, "[]") ?: "[]"
+    }
+
+    fun importProductsJson(json: String): List<Product> {
+        val arr = JSONArray(json)
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val name = obj.optString("name", "").trim()
+                val defaultPrice = obj.optDouble("defaultPrice", -1.0)
+                if (name.isNotBlank() && defaultPrice >= 0.0) {
+                    add(Product(name, defaultPrice.roundToInt().toDouble()))
+                }
+            }
+        }.distinctBy { it.name.trim().lowercase(Locale.getDefault()) }
+    }
+
+    fun importCustomersJson(json: String): List<Customer> {
+        val arr = JSONArray(json)
+        return buildList {
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                val name = obj.optString("name", "").trim()
+                val phone = obj.optString("phone", "").trim()
+                val gst = obj.optString("gst", "").trim()
+                if (name.isNotBlank() && phone.isNotBlank()) {
+                    add(Customer(name, phone, gst))
+                }
+            }
+        }.distinctBy { normalizeWhatsAppPhone(it.phone) ?: it.phone }
     }
 
     fun previewInvoiceNumber(): String {
@@ -1667,8 +2492,8 @@ class BillingStorage(context: Context) {
                 add(
                     InvoiceLineItem(
                         productName = obj.optString("productName", ""),
-                        quantity = obj.optDouble("quantity", 0.0),
-                        unitPrice = obj.optDouble("unitPrice", 0.0)
+                        quantity = obj.optDouble("quantity", 0.0).roundToInt().coerceAtLeast(0).toDouble(),
+                        unitPrice = obj.optDouble("unitPrice", 0.0).roundToInt().coerceAtLeast(0).toDouble()
                     )
                 )
             }
@@ -1681,8 +2506,8 @@ class BillingStorage(context: Context) {
             arr.put(
                 JSONObject().apply {
                     put("productName", it.productName)
-                    put("quantity", it.quantity)
-                    put("unitPrice", it.unitPrice)
+                    put("quantity", it.normalizedQuantity())
+                    put("unitPrice", it.unitPrice.roundToInt().coerceAtLeast(0))
                 }
             )
         }
@@ -1690,148 +2515,561 @@ class BillingStorage(context: Context) {
     }
 }
 
+/** Word-wrap for PDF drawing; keeps glyphs within [maxWidth] for the given [paint]. */
+private fun pdfWrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
+    val trimmed = text.trim()
+    if (trimmed.isEmpty()) return listOf("")
+    val lines = mutableListOf<String>()
+    var remaining = trimmed
+    val w = maxWidth.coerceAtLeast(24f)
+    while (remaining.isNotEmpty()) {
+        var count = paint.breakText(remaining, true, w, null)
+        if (count <= 0) count = 1
+        val chunk = remaining.substring(0, count).trimEnd()
+        lines.add(if (chunk.isEmpty()) remaining.substring(0, 1) else chunk)
+        remaining = remaining.substring(count).trimStart()
+    }
+    return lines
+}
+
+private fun paintLineHeight(paint: Paint): Float {
+    val fm = paint.fontMetrics
+    return (fm.descent - fm.ascent) + 6f
+}
+
+/** Visual height of a left-aligned multi-line block (baselines spaced by [lineHeight]). */
+private fun pdfTextBlockHeight(lineCount: Int, lineHeight: Float, fm: Paint.FontMetrics): Float {
+    if (lineCount <= 0) return 0f
+    if (lineCount == 1) return fm.descent - fm.ascent
+    return (lineCount - 1) * lineHeight + (fm.descent - fm.ascent)
+}
+
+/** First-line baseline to vertically center a wrapped label block between top and bottom. */
+private fun pdfCenteredLabelFirstBaseline(
+    top: Float,
+    bottom: Float,
+    lineCount: Int,
+    lineHeight: Float,
+    fm: Paint.FontMetrics
+): Float {
+    val blockH = pdfTextBlockHeight(lineCount, lineHeight, fm)
+    val firstLineTop = top + ((bottom - top) - blockH) / 2f
+    return firstLineTop - fm.ascent
+}
+
+/** Baseline for a single line of text vertically centered between top and bottom. */
+private fun pdfCenteredSingleLineBaseline(top: Float, bottom: Float, fm: Paint.FontMetrics): Float {
+    val cy = (top + bottom) / 2f
+    return cy - (fm.ascent + fm.descent) / 2f
+}
+
+private fun drawPdfWrappedLeft(
+    canvas: Canvas,
+    text: String,
+    paint: Paint,
+    x: Float,
+    startBaseline: Float,
+    maxWidth: Float
+): Float {
+    val lines = pdfWrapText(text, paint, maxWidth)
+    val lh = paintLineHeight(paint)
+    lines.forEachIndexed { i, line ->
+        canvas.drawText(line, x, startBaseline + i * lh, paint)
+    }
+    return startBaseline + lines.size * lh
+}
+
 object InvoicePdfGenerator {
+    private fun wrapProductNameLines(text: String, paint: Paint, maxWidth: Float): List<String> =
+        pdfWrapText(text, paint, maxWidth)
+
     fun createInvoicePdf(context: Context, invoice: InvoiceData): File? {
         return try {
             val document = PdfDocument()
-            val pageInfo = PdfDocument.PageInfo.Builder(1240, 1754, 1).create()
-            val page = document.startPage(pageInfo)
-            val canvas = page.canvas
+            var pageNumber = 1
+            var page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+            var canvas = page.canvas
 
-            val mutedLinePaint = Paint().apply {
-                color = Color.parseColor("#D8D8D8")
+            // Colors aligned with CrumbsAndSoulTheme / BrandLightColors (light).
+            val themeBackground = Color.parseColor("#F7F4EA")
+            val themeSurface = Color.parseColor("#FFFCF4")
+            // Body panel: slightly darker than surface, lighter than header (surfaceVariant).
+            val themeBodyPanel = Color.parseColor("#F4EFE3")
+            val themeSurfaceVariant = Color.parseColor("#EEE8DA")
+            val themeOnSurface = Color.parseColor("#1B1B1B")
+            val themeOnSurfaceVariant = Color.parseColor("#4A4A4A")
+            val themePrimary = Color.parseColor("#5E6840")
+            val themeSecondary = Color.parseColor("#BC9B56")
+            val themeTertiary = Color.parseColor("#7A5A1E")
+            val themeOutline = Color.parseColor("#B4AE9E")
+
+            // Full-page body fill (no white margins) + dark cream header band on top.
+            val bodyPanelFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeBodyPanel
+                style = Paint.Style.FILL
+            }
+            val surfaceVariantFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeSurfaceVariant
+                style = Paint.Style.FILL
+            }
+            val logoBackdropPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeSurface
+                style = Paint.Style.FILL
+            }
+            val mutedLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOutline
                 strokeWidth = 1.2f
             }
-            val lightFillPaint = Paint().apply {
-                color = Color.parseColor("#F7F8F2")
-                style = Paint.Style.FILL
+            val tableRowLinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(255, 212, 206, 190)
+                strokeWidth = 1f
             }
-            val whiteFillPaint = Paint().apply {
-                color = Color.WHITE
-                style = Paint.Style.FILL
-            }
-            val headingPaint = Paint().apply {
-                color = Color.parseColor("#5E6840")
+            val headingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themePrimary
                 textSize = 46f
                 isFakeBoldText = true
             }
-            val bodyPaint = Paint().apply {
-                color = Color.parseColor("#111111")
+            val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurface
                 textSize = 27f
             }
-            val strongPaint = Paint().apply {
-                color = Color.parseColor("#111111")
+            val strongPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurface
                 textSize = 30f
                 isFakeBoldText = true
             }
-            val brandPaint = Paint().apply {
-                color = Color.parseColor("#5E6840")
+            val brandPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themePrimary
                 textSize = 54f
                 isFakeBoldText = true
             }
-            val smallPaint = Paint().apply {
-                color = Color.parseColor("#555555")
+            val taglinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurfaceVariant
                 textSize = 22f
             }
-            val contactPaint = Paint().apply {
-                color = Color.parseColor("#111111")
+            val smallPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurfaceVariant
+                textSize = 22f
+            }
+            val contactPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurface
                 textSize = 23f
             }
-            val metaPaint = Paint().apply {
-                color = Color.parseColor("#444444")
+            val metaPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurfaceVariant
                 textSize = 22f
             }
-            val tableHeaderPaint = Paint().apply {
-                color = Color.parseColor("#1C1C1C")
+            val tableHeaderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = themeOnSurface
                 textSize = 27f
                 isFakeBoldText = true
             }
-            val bodyRightPaint = Paint(bodyPaint).apply {
+            val tableHeaderRightPaint = Paint(tableHeaderPaint).apply {
                 textAlign = Paint.Align.RIGHT
             }
-            val strongRightPaint = Paint(strongPaint).apply {
-                textAlign = Paint.Align.RIGHT
+            val tableHeaderFillPaint = Paint(surfaceVariantFillPaint)
+            val bodyRightPaint = Paint(bodyPaint).apply { textAlign = Paint.Align.RIGHT }
+            val strongRightPaint = Paint(strongPaint).apply { textAlign = Paint.Align.RIGHT }
+            val qtyRightPaint = Paint(bodyPaint).apply { textAlign = Paint.Align.RIGHT }
+            val totalsBoxStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 1f
+                color = themeOutline
             }
 
-            canvas.drawRect(40f, 40f, 1200f, 1714f, whiteFillPaint)
-            canvas.drawRoundRect(RectF(40f, 40f, 1200f, 320f), 24f, 24f, lightFillPaint)
+            // Edge-to-edge page background (PDF page is 1240×1754) — removes white outer border in viewers.
+            canvas.drawRect(0f, 0f, 1240f, 1754f, bodyPanelFillPaint)
+            // Dark cream header extends below the separator so the rule sits inside the header block.
+            val headerSeparatorY = 276f
+            val headerCardBottomY = 320f
+            canvas.drawRoundRect(RectF(40f, 40f, 1200f, headerCardBottomY), 24f, 24f, surfaceVariantFillPaint)
 
             val logoBitmapRaw = BitmapFactory.decodeResource(context.resources, R.drawable.brand_logo)
             val logoBitmap = removeBlackBackground(logoBitmapRaw)
             val logoRect = Rect(70, 78, 190, 198)
             val logoCircle = RectF(70f, 78f, 190f, 198f)
-            canvas.drawOval(logoCircle, whiteFillPaint)
+            canvas.drawOval(logoCircle, logoBackdropPaint)
             canvas.save()
             canvas.clipRect(logoRect)
             canvas.drawBitmap(logoBitmap, null, logoRect, null)
             canvas.restore()
 
             canvas.drawText("Crumbs & Soul", 220f, 138f, brandPaint)
-            canvas.drawText("Rooted Indulgence", 222f, 176f, smallPaint)
-            // Header right: FSSAI logo + number aligned.
-            val fssaiLogo = BitmapFactory.decodeResource(context.resources, R.drawable.fssai_logo)
-            canvas.drawBitmap(fssaiLogo, null, Rect(740, 100, 830, 150), null)
-            canvas.drawText("21225007001088", 840f, 138f, metaPaint)
+            val taglineStartX = 222f
+            canvas.drawText("Rooted Indulgence", taglineStartX, 176f, taglinePaint)
 
-            // Contact row with provided icons.
+            // Contact row: WhatsApp starts at tagline; symmetric L/R inset; equal gaps between clusters.
+            val headerContentLeft = 70f
+            val headerContentRight = 1180f
+            val contactIconW = 26f
+            val contactIconTextGap = 10f
+            val waNumber = "+91-9019508365"
+            val phoneNumber = "+91-9962355820"
+            val instaHandle = "@crumbs_and_soul"
+            fun clusterWidth(label: String) =
+                contactIconW + contactIconTextGap + contactPaint.measureText(label)
+            val wWa = clusterWidth(waNumber)
+            val wPhone = clusterWidth(phoneNumber)
+            val wInsta = clusterWidth(instaHandle)
+            val contactInnerRight = headerContentRight - (taglineStartX - headerContentLeft)
+            val rowInnerWidth = contactInnerRight - taglineStartX
+            val spaceForGaps = rowInnerWidth - wWa - wPhone - wInsta
+            val interClusterGap = (spaceForGaps / 2f).coerceAtLeast(0f)
+            val xWa = taglineStartX
+            val xPhone = xWa + wWa + interClusterGap
+            val xInsta = xPhone + wPhone + interClusterGap
+            val instaRightEdge = xInsta + wInsta
+
+            // FSSAI: right-align block (logo + number) with Instagram row.
+            val fssaiLogo = BitmapFactory.decodeResource(context.resources, R.drawable.fssai_logo)
+            val fssaiLogoW = 90f
+            val fssaiLogoTop = 100
+            val fssaiLogoBottom = 150
+            val fssaiNumber = "21225007001088"
+            val fssaiLogoTextGap = 10f
+            val fssaiTextW = metaPaint.measureText(fssaiNumber)
+            val fssaiBlockW = fssaiLogoW + fssaiLogoTextGap + fssaiTextW
+            val fssaiLeft = instaRightEdge - fssaiBlockW
+            canvas.drawBitmap(
+                fssaiLogo,
+                null,
+                Rect(
+                    fssaiLeft.roundToInt(),
+                    fssaiLogoTop,
+                    (fssaiLeft + fssaiLogoW).roundToInt(),
+                    fssaiLogoBottom
+                ),
+                null
+            )
+            canvas.drawText(fssaiNumber, fssaiLeft + fssaiLogoW + fssaiLogoTextGap, 138f, metaPaint)
+
+            val contactBaselineY = 252f
+            val contactIconTop = 230
+            val contactIconBottom = 256
             val waIcon = BitmapFactory.decodeResource(context.resources, R.drawable.whatsapp_icon)
             val phoneIcon = BitmapFactory.decodeResource(context.resources, R.drawable.phone_icon)
             val instaIcon = BitmapFactory.decodeResource(context.resources, R.drawable.instagram_icon)
-            canvas.drawBitmap(waIcon, null, Rect(220, 230, 246, 256), null)
-            canvas.drawText("+91-9019508365", 256f, 252f, contactPaint)
-            canvas.drawBitmap(phoneIcon, null, Rect(470, 230, 496, 256), null)
-            canvas.drawText("+91-9962355820", 506f, 252f, contactPaint)
-            canvas.drawBitmap(instaIcon, null, Rect(720, 230, 746, 256), null)
-            canvas.drawText("@crumbs_and_soul", 756f, 252f, contactPaint)
-            canvas.drawLine(60f, 308f, 1180f, 308f, mutedLinePaint)
+            fun drawContactClusterLeft(leftX: Float, bmp: Bitmap, label: String) {
+                canvas.drawBitmap(
+                    bmp,
+                    null,
+                    Rect(
+                        leftX.roundToInt(),
+                        contactIconTop,
+                        (leftX + contactIconW).roundToInt(),
+                        contactIconBottom
+                    ),
+                    null
+                )
+                canvas.drawText(
+                    label,
+                    leftX + contactIconW + contactIconTextGap,
+                    contactBaselineY,
+                    contactPaint
+                )
+            }
+            drawContactClusterLeft(xWa, waIcon, waNumber)
+            drawContactClusterLeft(xPhone, phoneIcon, phoneNumber)
+            drawContactClusterLeft(xInsta, instaIcon, instaHandle)
 
-            canvas.drawText("INVOICE", 70f, 380f, headingPaint)
-            canvas.drawText("Invoice No: ${invoice.invoiceNumber}", 70f, 435f, strongPaint)
-            canvas.drawText("Date: ${invoice.invoiceDate}", 860f, 435f, bodyPaint)
-            canvas.drawText("Customer: ${invoice.customerName}", 70f, 485f, bodyPaint)
+            canvas.drawLine(60f, headerSeparatorY, 1180f, headerSeparatorY, mutedLinePaint)
+
+            val invTypeLabel = normalizeInvoiceType(invoice.invoiceType)
+            val contentLeft = 70f
+            val contentRight = 1180f
+            // Table geometry first so B2B/B2C + Date share the same right edge as Line Total (with padding).
+            val tablePadH = 20f
+            val cellPadLeft = 14f
+            val cellPadRight = 24f
+            val tblLeft = contentLeft + tablePadH
+            val tblRight = contentRight - tablePadH
+            val amountRightX = tblRight - cellPadRight
+            val colItemX = tblLeft + cellPadLeft
+            // Fixed numeric column widths (right-aligned) so item text never intrudes; qty/unit/line stay one line each.
+            val colLineTotalReserve = 122f
+            val colUnitReserve = 132f
+            val colQtyReserve = 68f
+            val colGap = 14f
+            val colUnitRight = amountRightX - colLineTotalReserve - colGap
+            val colQtyRight = colUnitRight - colUnitReserve - colGap
+            val qtyColumnLeftEdge = colQtyRight - colQtyReserve
+            val itemNameMaxWidth = (qtyColumnLeftEdge - colItemX - colGap).coerceAtLeast(100f)
+
+            // Extra space below header card so "INVOICE" clears the header block comfortably.
+            val invoiceTitleBaseline = 398f
+            canvas.drawText("INVOICE", contentLeft, invoiceTitleBaseline, headingPaint)
+
+            val pillLabel = invTypeLabel
+            val pillTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = 21f
+                isFakeBoldText = true
+                textAlign = Paint.Align.LEFT
+                color = if (invTypeLabel == "B2B") {
+                    themeTertiary
+                } else {
+                    themePrimary
+                }
+            }
+            val padHPill = 20f
+            val pillH = 32f
+            val textW = pillTextPaint.measureText(pillLabel)
+            val pillW = textW + padHPill * 2
+            val metaRightAlignX = amountRightX
+            val pillRight = amountRightX
+            val pillLeft = pillRight - pillW
+            val fmInvoiceTitle = headingPaint.fontMetrics
+            val invTop = invoiceTitleBaseline + fmInvoiceTitle.ascent
+            val invBottom = invoiceTitleBaseline + fmInvoiceTitle.descent
+            val pillTop = invTop + (invBottom - invTop - pillH) / 2f
+            val pillFill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.FILL
+                color = if (invTypeLabel == "B2B") {
+                    themeSurface
+                } else {
+                    themeBackground
+                }
+            }
+            val pillStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = 1f
+                color = if (invTypeLabel == "B2B") {
+                    themeSecondary
+                } else {
+                    themeOutline
+                }
+            }
+            val pillRect = RectF(pillLeft, pillTop, pillRight, pillTop + pillH)
+            canvas.drawRoundRect(pillRect, 8f, 8f, pillFill)
+            canvas.drawRoundRect(pillRect, 8f, 8f, pillStroke)
+            val fmPill = pillTextPaint.fontMetrics
+            val pillTextBaseline = pillTop + pillH / 2f - (fmPill.ascent + fmPill.descent) / 2f
+            canvas.drawText(pillLabel, pillLeft + padHPill, pillTextBaseline, pillTextPaint)
+
+            // Metadata: invoice line bold like original; customer/phone regular body, smaller; date aligned with type pill.
+            val customerLinePaint = Paint(bodyPaint).apply {
+                textSize = 26f
+                isFakeBoldText = false
+            }
+            val dateLinePaint = Paint(bodyPaint).apply {
+                textSize = 27f
+                textAlign = Paint.Align.RIGHT
+            }
+            var metaY = 456f
+            val metaLabelMaxW = (metaRightAlignX - contentLeft - 28f).coerceAtLeast(120f)
+            val invNoLines = pdfWrapText("Invoice No: ${invoice.invoiceNumber}", strongPaint, metaLabelMaxW)
+            val strongLh = paintLineHeight(strongPaint)
+            invNoLines.forEachIndexed { i, line ->
+                val bl = metaY + i * strongLh
+                canvas.drawText(line, contentLeft, bl, strongPaint)
+                if (i == 0) {
+                    canvas.drawText("Date: ${invoice.invoiceDate}", metaRightAlignX, bl, dateLinePaint)
+                }
+            }
+            metaY += invNoLines.size * strongLh + 12f
+            val custName = invoice.customerName.ifBlank { "Walk-in Customer" }
+            val custFullW = (contentRight - contentLeft - 16f).coerceAtLeast(120f)
+            metaY = drawPdfWrappedLeft(canvas, "Customer: $custName", customerLinePaint, contentLeft, metaY, custFullW)
             if (invoice.customerPhone.isNotBlank()) {
-                canvas.drawText("Phone: ${invoice.customerPhone}", 70f, 527f, bodyPaint)
+                metaY += 8f
+                metaY = drawPdfWrappedLeft(canvas, "Phone: ${invoice.customerPhone}", customerLinePaint, contentLeft, metaY, custFullW)
             }
-            canvas.drawText("UPI: hanajanalakshmi@okaxis", 70f, 575f, strongPaint)
-            canvas.drawLine(60f, 604f, 1180f, 604f, mutedLinePaint)
+            metaY += 28f
+            canvas.drawLine(contentLeft, metaY, contentRight, metaY, mutedLinePaint)
 
-            var y = 655f
-            canvas.drawRoundRect(RectF(60f, 624f, 1180f, 680f), 8f, 8f, lightFillPaint)
-            val colItemX = 75f
-            val colQtyX = 665f
-            val colUnitX = 805f
-            val colLineHeaderX = 960f
-            val amountRightX = 1135f
-            canvas.drawText("Item", colItemX, y, tableHeaderPaint)
-            canvas.drawText("Qty", colQtyX, y, tableHeaderPaint)
-            canvas.drawText("Unit Price", colUnitX, y, tableHeaderPaint)
-            canvas.drawText("Line Total", colLineHeaderX, y, tableHeaderPaint)
-            canvas.drawLine(60f, 652f, 1180f, 652f, mutedLinePaint)
-            y += 60f
-            invoice.items.forEach {
-                canvas.drawText(it.productName.take(28), 70f, y, bodyPaint)
-                canvas.drawText(money(it.quantity), colQtyX + 15f, y, bodyPaint)
-                canvas.drawText("₹${money(it.unitPrice)}", colUnitX - 5f, y, bodyPaint)
-                canvas.drawText("₹${money(it.lineTotal())}", amountRightX, y, bodyRightPaint)
-                canvas.drawLine(60f, y + 18f, 1180f, y + 18f, mutedLinePaint)
-                y += 45f
+            val fmBody = bodyPaint.fontMetrics
+            // Extra line spacing so wrapped item names don’t sit on the row divider.
+            val itemLineHeight = (fmBody.descent - fmBody.ascent) + 12f
+            val rowDividerBelowText = 24f
+            val rowSpacingAfterDivider = 26f
+            // Keep entire rows on one page (no wrapped item text on one page and qty/price on another).
+            val pageContentBottomY = 1710f
+
+            val headerBandTop = metaY + 38f
+            val headerBandBottom = headerBandTop + 56f
+            val headerTextBaseline = headerBandTop + 36f
+            val headerRuleY = headerBandBottom - 3f
+
+            // Space needed for table header band + at least one single-line item row + divider.
+            val minOneItemRowBottom =
+                headerBandBottom + 42f + itemLineHeight + fmBody.descent + rowDividerBelowText + rowSpacingAfterDivider
+            val needTableOnNewPage =
+                invoice.items.isNotEmpty() && minOneItemRowBottom > pageContentBottomY
+
+            val unitRightPaint = Paint(bodyRightPaint)
+
+            fun drawContinuationTableHeaderOnly(): Float {
+                val contPaint = Paint(headingPaint).apply { textSize = 34f }
+                val titleY = 86f
+                canvas.drawText("INVOICE (continued) — ${invoice.invoiceNumber}", contentLeft, titleY, contPaint)
+                canvas.drawLine(contentLeft, titleY + 32f, contentRight, titleY + 32f, mutedLinePaint)
+                val hbTop = titleY + 56f
+                val hbBot = hbTop + 56f
+                val htb = hbTop + 36f
+                val hrY = hbBot - 3f
+                canvas.drawRoundRect(
+                    RectF(contentLeft, hbTop, contentRight, hbBot),
+                    8f,
+                    8f,
+                    tableHeaderFillPaint
+                )
+                canvas.drawText("Item", colItemX, htb, tableHeaderPaint)
+                canvas.drawText("Qty", colQtyRight, htb, tableHeaderRightPaint)
+                canvas.drawText("Unit Price", colUnitRight, htb, tableHeaderRightPaint)
+                canvas.drawText("Line Total", amountRightX, htb, tableHeaderRightPaint)
+                canvas.drawLine(tblLeft, hrY, tblRight, hrY, mutedLinePaint)
+                return hbBot + 42f
             }
 
-            y += 30f
+            /** Baseline for first item row on a continuation page (after header block). */
+            fun continuationFirstItemBaseline(): Float = 86f + 56f + 56f + 42f
+
+            var rowBaseline = if (needTableOnNewPage) {
+                document.finishPage(page)
+                pageNumber += 1
+                page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+                canvas = page.canvas
+                canvas.drawRect(0f, 0f, 1240f, 1754f, bodyPanelFillPaint)
+                drawContinuationTableHeaderOnly()
+            } else {
+                canvas.drawRoundRect(
+                    RectF(contentLeft, headerBandTop, contentRight, headerBandBottom),
+                    8f,
+                    8f,
+                    tableHeaderFillPaint
+                )
+                canvas.drawText("Item", colItemX, headerTextBaseline, tableHeaderPaint)
+                canvas.drawText("Qty", colQtyRight, headerTextBaseline, tableHeaderRightPaint)
+                canvas.drawText("Unit Price", colUnitRight, headerTextBaseline, tableHeaderRightPaint)
+                canvas.drawText("Line Total", amountRightX, headerTextBaseline, tableHeaderRightPaint)
+                canvas.drawLine(tblLeft, headerRuleY, tblRight, headerRuleY, mutedLinePaint)
+                headerBandBottom + 42f
+            }
+
+            fun startContinuationPageWithTableHeader() {
+                document.finishPage(page)
+                pageNumber += 1
+                page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+                canvas = page.canvas
+                canvas.drawRect(0f, 0f, 1240f, 1754f, bodyPanelFillPaint)
+                rowBaseline = drawContinuationTableHeaderOnly()
+            }
+
+            fun startBlankTotalsPage() {
+                document.finishPage(page)
+                pageNumber += 1
+                page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+                canvas = page.canvas
+                canvas.drawRect(0f, 0f, 1240f, 1754f, bodyPanelFillPaint)
+                rowBaseline = 110f
+            }
+
+            var itemIdx = 0
+            while (itemIdx < invoice.items.size) {
+                val item = invoice.items[itemIdx]
+                val nameLines = wrapProductNameLines(item.productName, bodyPaint, itemNameMaxWidth)
+                val linesForRow = nameLines.size.coerceAtLeast(1)
+                val lastLineBaseline = rowBaseline + (linesForRow - 1) * itemLineHeight
+                val rowDividerY = lastLineBaseline + fmBody.descent + rowDividerBelowText
+                val rowBottomWithSpacing = rowDividerY + rowSpacingAfterDivider
+                if (rowBottomWithSpacing > pageContentBottomY) {
+                    val rowSpan = rowBottomWithSpacing - rowBaseline
+                    val usableOnFreshPage = pageContentBottomY - continuationFirstItemBaseline()
+                    if (rowSpan <= usableOnFreshPage) {
+                        startContinuationPageWithTableHeader()
+                        continue
+                    }
+                }
+                nameLines.forEachIndexed { idx, line ->
+                    canvas.drawText(line, colItemX, rowBaseline + idx * itemLineHeight, bodyPaint)
+                }
+                canvas.drawText(item.normalizedQuantity().toString(), colQtyRight, rowBaseline, qtyRightPaint)
+                canvas.drawText("₹${money(item.unitPrice)}", colUnitRight, rowBaseline, unitRightPaint)
+                canvas.drawText("₹${money(item.lineTotal())}", amountRightX, rowBaseline, bodyRightPaint)
+                canvas.drawLine(tblLeft, rowDividerY, tblRight, rowDividerY, tableRowLinePaint)
+                rowBaseline = rowDividerY + rowSpacingAfterDivider
+                itemIdx++
+            }
+
+            val totalsLeft = tblRight - 464f
+            val totalsLabelMaxW = (amountRightX - totalsLeft - 40f).coerceAtLeast(100f)
+            if (rowBaseline + 320f > 1680f) {
+                startBlankTotalsPage()
+            }
+            var y = rowBaseline + 24f
             if (invoice.shippingCharges > 0.0) {
-                canvas.drawRoundRect(RectF(720f, y - 28f, 1180f, y + 20f), 8f, 8f, lightFillPaint)
-                canvas.drawText("Shipping Charges:", 740f, y + 5f, bodyPaint)
-                canvas.drawText("₹${money(invoice.shippingCharges)}", amountRightX, y + 5f, bodyRightPaint)
-                y += 62f
+                val shipLines = pdfWrapText("Shipping Charges:", bodyPaint, totalsLabelMaxW)
+                val shipLh = paintLineHeight(bodyPaint)
+                val fmShipLabel = bodyPaint.fontMetrics
+                val shipBlockH = pdfTextBlockHeight(shipLines.size, shipLh, fmShipLabel)
+                val shipPadV = 16f
+                val shipTop = y
+                val shipBot = shipTop + shipPadV * 2 + shipBlockH
+                canvas.drawRoundRect(RectF(totalsLeft, shipTop, tblRight, shipBot), 8f, 8f, surfaceVariantFillPaint)
+                canvas.drawRoundRect(RectF(totalsLeft, shipTop, tblRight, shipBot), 8f, 8f, totalsBoxStrokePaint)
+                val shipLabelBaseline = pdfCenteredLabelFirstBaseline(
+                    shipTop, shipBot, shipLines.size, shipLh, fmShipLabel
+                )
+                shipLines.forEachIndexed { i, ln ->
+                    canvas.drawText(ln, totalsLeft + 20f, shipLabelBaseline + i * shipLh, bodyPaint)
+                }
+                val shipAmtBaseline = pdfCenteredSingleLineBaseline(shipTop, shipBot, bodyRightPaint.fontMetrics)
+                canvas.drawText("₹${money(invoice.shippingCharges)}", amountRightX, shipAmtBaseline, bodyRightPaint)
+                y = shipBot + 32f
             }
-            canvas.drawRoundRect(RectF(720f, y - 35f, 1180f, y + 25f), 8f, 8f, lightFillPaint)
-            canvas.drawText("Total Amount:", 740f, y, strongPaint)
-            canvas.drawText("₹${money(invoice.total)}", amountRightX, y, strongRightPaint)
-            y += 85f
-            canvas.drawLine(60f, y - 35f, 1180f, y - 35f, mutedLinePaint)
-            canvas.drawText("Thank you for choosing Crumbs & Soul.", 70f, y, smallPaint)
-            y += 34f
-            canvas.drawText("This is a computer generated invoice. No signature required.", 70f, y, smallPaint)
+            val totalLabelLines = pdfWrapText("Total Amount:", strongPaint, totalsLabelMaxW)
+            val totalStrongLh = paintLineHeight(strongPaint)
+            val fmTotalLabel = strongPaint.fontMetrics
+            val totBlockH = pdfTextBlockHeight(totalLabelLines.size, totalStrongLh, fmTotalLabel)
+            val totPadV = 16f
+            val totTop = y
+            val totBot = totTop + totPadV * 2 + totBlockH
+            canvas.drawRoundRect(RectF(totalsLeft, totTop, tblRight, totBot), 8f, 8f, surfaceVariantFillPaint)
+            canvas.drawRoundRect(RectF(totalsLeft, totTop, tblRight, totBot), 8f, 8f, totalsBoxStrokePaint)
+            val totLabelBaseline = pdfCenteredLabelFirstBaseline(
+                totTop, totBot, totalLabelLines.size, totalStrongLh, fmTotalLabel
+            )
+            totalLabelLines.forEachIndexed { i, ln ->
+                canvas.drawText(ln, totalsLeft + 20f, totLabelBaseline + i * totalStrongLh, strongPaint)
+            }
+            val totalAmtBaseline = pdfCenteredSingleLineBaseline(totTop, totBot, strongRightPaint.fontMetrics)
+            canvas.drawText("₹${money(invoice.total)}", amountRightX, totalAmtBaseline, strongRightPaint)
+            val totalBoxBottom = totBot
+            val footerRuleY = totalBoxBottom + 40f
+            canvas.drawLine(contentLeft, footerRuleY, contentRight, footerRuleY, mutedLinePaint)
+
+            val upiVpa = "hanajanalakshmi@okaxis"
+            val upiFooterPaint = Paint(strongPaint).apply {
+                textSize = 26f
+                color = themePrimary
+            }
+            val footerTextW = (contentRight - contentLeft - 12f).coerceAtLeast(120f)
+            var footerY = footerRuleY + 38f
+            footerY = drawPdfWrappedLeft(
+                canvas,
+                "Thank you for choosing Crumbs & Soul.",
+                smallPaint,
+                contentLeft,
+                footerY,
+                footerTextW
+            )
+            footerY += 20f
+            footerY = drawPdfWrappedLeft(
+                canvas,
+                "Pay via UPI — $upiVpa",
+                upiFooterPaint,
+                contentLeft,
+                footerY,
+                footerTextW
+            )
+            footerY += 16f
+            drawPdfWrappedLeft(
+                canvas,
+                "This is a computer generated invoice. No signature required.",
+                smallPaint,
+                contentLeft,
+                footerY,
+                footerTextW
+            )
 
             document.finishPage(page)
             val folder = File(
@@ -1871,13 +3109,14 @@ fun createSalesReportPdf(
     reportType: String,
     monthFilter: String,
     customerFilter: String,
-    rows: List<ReportRow>
+    rows: List<ReportRow>,
+    records: List<InvoiceRecord>
 ): File? {
     return try {
         val document = PdfDocument()
-        val pageInfo = PdfDocument.PageInfo.Builder(1240, 1754, 1).create()
-        val page = document.startPage(pageInfo)
-        val canvas = page.canvas
+        var pageNumber = 1
+        var page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+        var canvas = page.canvas
         val titlePaint = Paint().apply {
             color = Color.parseColor("#5E6840")
             textSize = 44f
@@ -1896,44 +3135,218 @@ fun createSalesReportPdf(
             textSize = 28f
             isFakeBoldText = true
         }
+        val smallBoldPaint = Paint().apply {
+            color = Color.parseColor("#111111")
+            textSize = 20f
+            isFakeBoldText = true
+        }
+        val smallBodyPaint = Paint().apply {
+            color = Color.parseColor("#111111")
+            textSize = 18f
+        }
+        val smallLh = paintLineHeight(smallBodyPaint)
+        val rulePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#B4AE9E")
+            strokeWidth = 1.2f
+            style = Paint.Style.STROKE
+        }
 
-        canvas.drawText("Crumbs & Soul - Sales Report", 70f, 100f, titlePaint)
-        canvas.drawText("Type: $reportType", 70f, 150f, subtitlePaint)
-        canvas.drawText("Month: $monthFilter | Customer: $customerFilter", 70f, 190f, subtitlePaint)
-        canvas.drawLine(60f, 220f, 1180f, 220f, bodyPaint)
+        fun drawPageHeader(): Float {
+            canvas.drawText("Crumbs & Soul - Sales Report", 70f, 100f, titlePaint)
+            canvas.drawText("Type: $reportType", 70f, 150f, subtitlePaint)
+            val filterLines = pdfWrapText(
+                "Month: $monthFilter | Customer: $customerFilter",
+                subtitlePaint,
+                1100f
+            )
+            val subLh = paintLineHeight(subtitlePaint)
+            var hy = 190f
+            filterLines.forEachIndexed { i, line ->
+                canvas.drawText(line, 70f, hy + i * subLh, subtitlePaint)
+            }
+            hy += filterLines.size * subLh + 14f
+            canvas.drawLine(60f, hy, 1180f, hy, rulePaint)
+            return hy + 28f
+        }
 
-        var y = 270f
-        canvas.drawText(if (reportType == "Month-wise") "Month" else "Customer", 70f, y, boldPaint)
-        canvas.drawText("Invoices", 700f, y, boldPaint)
-        canvas.drawText("Total Sales", 930f, y, boldPaint)
-        y += 25f
-        canvas.drawLine(60f, y, 1180f, y, bodyPaint)
-        y += 40f
+        fun newPage() {
+            document.finishPage(page)
+            pageNumber += 1
+            page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+            canvas = page.canvas
+        }
 
-        rows.forEach {
-            if (y > 1640f) return@forEach
-            canvas.drawText(it.key.take(28), 70f, y, bodyPaint)
-            canvas.drawText(it.invoiceCount.toString(), 730f, y, bodyPaint)
-            canvas.drawText("₹${money(it.totalSales)}", 930f, y, bodyPaint)
-            y += 42f
+        var y = drawPageHeader()
+        val reportPageBottomY = 1700f
+
+        val xNameCol = 70f
+        val xCountCol = 730f
+        val xTotalCol = 930f
+        val maxSummaryNameW = (xCountCol - xNameCol - 24f).coerceAtLeast(120f)
+        val summaryBodyLh = paintLineHeight(bodyPaint)
+
+        // Keep summary column headers + at least one full data row on the same page.
+        val summaryHeaderBandH = 28f + 36f
+        val minSummaryDataRowH = summaryBodyLh + 12f
+        if (y + summaryHeaderBandH + minSummaryDataRowH > reportPageBottomY) {
+            newPage()
+            y = drawPageHeader()
+        }
+
+        fun drawSummaryTableHeaders(atY: Float): Float {
+            var yy = atY
+            canvas.drawText(if (reportType == "Month-wise") "Month" else "Customer", 70f, yy, boldPaint)
+            canvas.drawText("Invoices", 700f, yy, boldPaint)
+            canvas.drawText("Total Sales", 930f, yy, boldPaint)
+            yy += 28f
+            canvas.drawLine(60f, yy, 1180f, yy, rulePaint)
+            yy += 36f
+            return yy
+        }
+
+        y = drawSummaryTableHeaders(y)
+
+        rows.forEach { row ->
+            val nameLines = pdfWrapText(row.key, bodyPaint, maxSummaryNameW)
+            val rowBlockH = nameLines.size * summaryBodyLh + 12f
+            if (y + rowBlockH > reportPageBottomY) {
+                newPage()
+                y = drawPageHeader()
+                y = drawSummaryTableHeaders(y)
+            }
+            val rowTop = y
+            nameLines.forEachIndexed { i, line ->
+                canvas.drawText(line, xNameCol, rowTop + i * summaryBodyLh, bodyPaint)
+            }
+            canvas.drawText(row.invoiceCount.toString(), xCountCol, rowTop, bodyPaint)
+            canvas.drawText("₹${money(row.totalSales)}", xTotalCol, rowTop, bodyPaint)
+            y = rowTop + rowBlockH
         }
 
         y += 20f
-        canvas.drawLine(60f, y, 1180f, y, bodyPaint)
-        y += 45f
-        canvas.drawText(
+        canvas.drawLine(60f, y, 1180f, y, rulePaint)
+        y += 40f
+        val grandLines = pdfWrapText(
             "Grand Total: ₹${money(rows.sumOf { it.totalSales })}",
-            760f,
-            y,
-            boldPaint
+            boldPaint,
+            1050f
         )
-        y += 60f
-        canvas.drawText(
+        val grandLh = paintLineHeight(boldPaint)
+        if (y + grandLines.size * grandLh > reportPageBottomY - 40f) {
+            newPage()
+            y = drawPageHeader()
+        }
+        grandLines.forEachIndexed { i, line ->
+            canvas.drawText(line, 70f, y + i * grandLh, boldPaint)
+        }
+        y += grandLines.size * grandLh + 36f
+        val genLines = pdfWrapText(
             "Generated on: ${SimpleDateFormat("dd MMM yyyy HH:mm", Locale.getDefault()).format(Date())}",
-            70f,
-            y,
-            subtitlePaint
+            subtitlePaint,
+            1100f
         )
+        val genLh = paintLineHeight(subtitlePaint)
+        if (y + genLines.size * genLh > reportPageBottomY) {
+            newPage()
+            y = drawPageHeader()
+        }
+        genLines.forEachIndexed { i, line ->
+            canvas.drawText(line, 70f, y + i * genLh, subtitlePaint)
+        }
+        y += genLines.size * genLh + 32f
+
+        val invoiceRows = buildInvoicePdfRows(records)
+        val xInv = 70f
+        val xType = 268f
+        val xCust = 348f
+        val xDate = 558f
+        val rQty = 776f
+        val rShip = 912f
+        val rTotal = 1148f
+        val wInv = (xType - xInv - 12f).coerceAtLeast(60f)
+        val wType = (xCust - xType - 10f).coerceAtLeast(40f)
+        val wCust = (xDate - xCust - 12f).coerceAtLeast(80f)
+        val wDate = (rQty - xDate - 18f).coerceAtLeast(60f)
+        val qtyRightPaint = Paint(smallBodyPaint).apply { textAlign = Paint.Align.RIGHT }
+        val shipRightPaint = Paint(smallBodyPaint).apply { textAlign = Paint.Align.RIGHT }
+        val totalRightPaint = Paint(smallBodyPaint).apply { textAlign = Paint.Align.RIGHT }
+        val hdrQtyRight = Paint(smallBoldPaint).apply { textAlign = Paint.Align.RIGHT }
+        val hdrShipRight = Paint(smallBoldPaint).apply { textAlign = Paint.Align.RIGHT }
+        val hdrTotalRight = Paint(smallBoldPaint).apply { textAlign = Paint.Align.RIGHT }
+
+        fun detailRowHeight(row: ReportInvoicePdfRow): Float {
+            val invLines = pdfWrapText(row.invoiceNumber, smallBodyPaint, wInv)
+            val typeLines = pdfWrapText(row.invoiceType, smallBodyPaint, wType)
+            val custLines = pdfWrapText(row.customerName, smallBodyPaint, wCust)
+            val dateLines = pdfWrapText(row.invoiceDate, smallBodyPaint, wDate)
+            val maxTextLines = maxOf(invLines.size, typeLines.size, custLines.size, dateLines.size, 1)
+            return maxTextLines * smallLh + 10f
+        }
+
+        // Title + rule + column headers + first data row on one page (no orphan headers/columns).
+        val detailIntroH = 32f + 36f + 48f
+        val firstDetailRowH =
+            invoiceRows.firstOrNull()?.let { detailRowHeight(it) } ?: (smallLh + 10f)
+        if (y + detailIntroH + firstDetailRowH > reportPageBottomY) {
+            newPage()
+            y = drawPageHeader()
+        }
+        canvas.drawText("Invoice-wise Details", 70f, y, boldPaint)
+        y += 32f
+        canvas.drawLine(60f, y, 1180f, y, rulePaint)
+        y += 36f
+
+        fun drawDetailsHeader() {
+            canvas.drawText("Inv#", xInv, y, smallBoldPaint)
+            canvas.drawText("Type", xType, y, smallBoldPaint)
+            canvas.drawText("Customer", xCust, y, smallBoldPaint)
+            canvas.drawText("Date", xDate, y, smallBoldPaint)
+            canvas.drawText("Qty", rQty, y, hdrQtyRight)
+            canvas.drawText("Ship", rShip, y, hdrShipRight)
+            canvas.drawText("Total", rTotal, y, hdrTotalRight)
+            y += 20f
+            canvas.drawLine(60f, y, 1180f, y, rulePaint)
+            y += 28f
+        }
+
+        fun startDetailsContinuation(title: String) {
+            newPage()
+            y = drawPageHeader()
+            canvas.drawText(title, 70f, y, boldPaint)
+            y += 32f
+            canvas.drawLine(60f, y, 1180f, y, rulePaint)
+            y += 36f
+            drawDetailsHeader()
+        }
+
+        drawDetailsHeader()
+        invoiceRows.forEach { row ->
+            val invLines = pdfWrapText(row.invoiceNumber, smallBodyPaint, wInv)
+            val typeLines = pdfWrapText(row.invoiceType, smallBodyPaint, wType)
+            val custLines = pdfWrapText(row.customerName, smallBodyPaint, wCust)
+            val dateLines = pdfWrapText(row.invoiceDate, smallBodyPaint, wDate)
+            val maxTextLines = maxOf(invLines.size, typeLines.size, custLines.size, dateLines.size, 1)
+            val rowH = maxTextLines * smallLh + 10f
+            if (y + rowH > reportPageBottomY) {
+                // Only move to a new page if the full row fits below headers there (avoid infinite continuation).
+                val minDataTopOnNewPage = 320f
+                if (rowH <= reportPageBottomY - minDataTopOnNewPage) {
+                    startDetailsContinuation("Invoice-wise Details (contd.)")
+                }
+            }
+            val rowTop = y
+            for (i in 0 until maxTextLines) {
+                val bl = rowTop + i * smallLh
+                if (i < invLines.size) canvas.drawText(invLines[i], xInv, bl, smallBodyPaint)
+                if (i < typeLines.size) canvas.drawText(typeLines[i], xType, bl, smallBodyPaint)
+                if (i < custLines.size) canvas.drawText(custLines[i], xCust, bl, smallBodyPaint)
+                if (i < dateLines.size) canvas.drawText(dateLines[i], xDate, bl, smallBodyPaint)
+            }
+            canvas.drawText(row.totalItemQty.toString(), rQty, rowTop, qtyRightPaint)
+            canvas.drawText(money(row.shippingCharges), rShip, rowTop, shipRightPaint)
+            canvas.drawText(money(row.invoiceTotal), rTotal, rowTop, totalRightPaint)
+            y = rowTop + rowH
+        }
 
         document.finishPage(page)
         val folder = File(
@@ -1954,11 +3367,14 @@ fun createSalesReportExcel(
     reportType: String,
     monthFilter: String,
     customerFilter: String,
-    rows: List<ReportRow>
+    rows: List<ReportRow>,
+    records: List<InvoiceRecord>,
+    customers: List<Customer>
 ): File? {
     return try {
         val workbook = XSSFWorkbook()
         val sheet = workbook.createSheet("Sales Report")
+        val detailSheet = workbook.createSheet("Invoice Details")
         var rowIndex = 0
         sheet.createRow(rowIndex++).apply { createCell(0).setCellValue("Crumbs & Soul Sales Report") }
         sheet.createRow(rowIndex++).apply { createCell(0).setCellValue("Type: $reportType") }
@@ -1981,9 +3397,47 @@ fun createSalesReportExcel(
             createCell(1).setCellValue("Grand Total")
             createCell(2).setCellValue(rows.sumOf { it.totalSales })
         }
-        sheet.autoSizeColumn(0)
-        sheet.autoSizeColumn(1)
-        sheet.autoSizeColumn(2)
+        sheet.safeAutoSizeColumnsInclusive(2)
+
+        var detailRowIndex = 0
+        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Crumbs & Soul Sales Report - Invoice Details") }
+        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Type: $reportType") }
+        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Month: $monthFilter") }
+        detailSheet.createRow(detailRowIndex++).apply { createCell(0).setCellValue("Customer: $customerFilter") }
+        detailRowIndex++
+        detailSheet.createRow(detailRowIndex++).apply {
+            createCell(0).setCellValue("Invoice #")
+            createCell(1).setCellValue("Type")
+            createCell(2).setCellValue("Date")
+            createCell(3).setCellValue("Invoice Name")
+            createCell(4).setCellValue("Mapped Customer (by phone)")
+            createCell(5).setCellValue("Customer Phone")
+            createCell(6).setCellValue("Item")
+            createCell(7).setCellValue("Qty")
+            createCell(8).setCellValue("Unit Price")
+            createCell(9).setCellValue("Line Total")
+            createCell(10).setCellValue("Shipping")
+            createCell(11).setCellValue("Invoice Total")
+            createCell(12).setCellValue("Payment Status")
+        }
+        buildReportDetailRows(records, customers).forEach { detail ->
+            detailSheet.createRow(detailRowIndex++).apply {
+                createCell(0).setCellValue(detail.invoiceNumber)
+                createCell(1).setCellValue(detail.invoiceType)
+                createCell(2).setCellValue(detail.invoiceDate)
+                createCell(3).setCellValue(detail.customerName)
+                createCell(4).setCellValue(detail.mappedCustomerName)
+                createCell(5).setCellValue(detail.customerPhone)
+                createCell(6).setCellValue(detail.itemName)
+                createCell(7).setCellValue(detail.quantity.toDouble())
+                createCell(8).setCellValue(detail.unitPrice)
+                createCell(9).setCellValue(detail.lineTotal)
+                createCell(10).setCellValue(detail.shippingCharges)
+                createCell(11).setCellValue(detail.invoiceTotal)
+                createCell(12).setCellValue(detail.paymentStatus)
+            }
+        }
+        detailSheet.safeAutoSizeColumnsInclusive(12)
 
         val folder = File(
             context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
@@ -2091,6 +3545,29 @@ fun openPdfFile(context: Context, file: File) {
         context.startActivity(viewIntent)
     } catch (_: Exception) {
         Toast.makeText(context, "No PDF viewer app found", Toast.LENGTH_SHORT).show()
+    }
+}
+
+fun openExportedFile(context: Context, file: File) {
+    val extension = file.extension.lowercase(Locale.getDefault())
+    val mimeType = when (extension) {
+        "pdf" -> "application/pdf"
+        "xlsx" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        else -> "*/*"
+    }
+    val uri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        file
+    )
+    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mimeType)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    try {
+        context.startActivity(viewIntent)
+    } catch (_: Exception) {
+        Toast.makeText(context, "No app found to open this file", Toast.LENGTH_SHORT).show()
     }
 }
 

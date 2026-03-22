@@ -8,6 +8,8 @@
         android:minSdkVersion="26"
         android:targetSdkVersion="34" />
 
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
     <permission
         android:name="com.crumbsandsoul.billing.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
         android:protectionLevel="signature" />
@@ -23,7 +25,6 @@
         android:label="@string/app_name"
         android:roundIcon="@drawable/app_logo_clean"
         android:supportsRtl="true"
-        android:testOnly="true"
         android:theme="@style/Theme.CrumbsAndSoul" >
         <activity
             android:name="com.crumbsandsoul.billing.MainActivity"

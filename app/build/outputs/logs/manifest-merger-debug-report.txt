@@ -1,20 +1,20 @@
 -- Merging decision tree log ---
 provider#androidx.core.content.FileProvider
-INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:21:9-29:20
+INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:23:9-31:20
 	android:grantUriPermissions
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:25:13-47
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:27:13-47
 	android:authorities
 		INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:23:13-64
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:25:13-64
 	android:exported
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:24:13-37
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:26:13-37
 	android:name
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:22:13-62
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:24:13-62
 manifest
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-32:12
-INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-32:12
-INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-32:12
-INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-32:12
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-34:12
+INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-34:12
+INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-34:12
+INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:1-34:12
 MERGED from [com.google.android.material:material:1.12.0] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/d87a0a7ea270e16fc3b14d294f3d7005/transformed/material-1.12.0/AndroidManifest.xml:17:1-24:12
 MERGED from [androidx.constraintlayout:constraintlayout:2.0.1] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/ecfacdfd26b31829d15d06e013a79bef/transformed/constraintlayout-2.0.1/AndroidManifest.xml:2:1-11:12
 MERGED from [androidx.appcompat:appcompat-resources:1.6.1] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/4e645b3e51174ce06f3d8129ad23e92d/transformed/appcompat-resources-1.6.1/AndroidManifest.xml:17:1-22:12
@@ -100,9 +100,13 @@ MERGED from [androidx.arch.core:core-runtime:2.2.0] /Users/dwarakeshtp/.gradle/c
 		INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml
 	xmlns:android
 		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:2:11-69
+uses-permission#android.permission.READ_CONTACTS
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:4:5-72
+	android:name
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:4:22-69
 application
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:4:5-30:19
-INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:4:5-30:19
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:6:5-32:19
+INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:6:5-32:19
 MERGED from [com.google.android.material:material:1.12.0] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/d87a0a7ea270e16fc3b14d294f3d7005/transformed/material-1.12.0/AndroidManifest.xml:22:5-20
 MERGED from [com.google.android.material:material:1.12.0] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/d87a0a7ea270e16fc3b14d294f3d7005/transformed/material-1.12.0/AndroidManifest.xml:22:5-20
 MERGED from [androidx.constraintlayout:constraintlayout:2.0.1] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/ecfacdfd26b31829d15d06e013a79bef/transformed/constraintlayout-2.0.1/AndroidManifest.xml:9:5-20
@@ -128,39 +132,39 @@ MERGED from [androidx.startup:startup-runtime:1.1.1] /Users/dwarakeshtp/.gradle/
 	android:appComponentFactory
 		ADDED from [androidx.core:core:1.13.1] /Users/dwarakeshtp/.gradle/caches/9.4.1/transforms/4efec5c5f9cc358f830cdca5854c4e09/transformed/core-1.13.1/AndroidManifest.xml:28:18-86
 	android:supportsRtl
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:9:9-35
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:11:9-35
 	android:label
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:7:9-41
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:9:9-41
 	android:roundIcon
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:8:9-53
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:10:9-53
 	android:icon
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:6:9-48
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:8:9-48
 	android:allowBackup
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:5:9-35
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:7:9-35
 	android:theme
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:10:9-51
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:12:9-51
 activity#com.crumbsandsoul.billing.MainActivity
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:11:9-19:20
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:13:9-21:20
 	android:exported
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:13:13-36
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:15:13-36
 	android:name
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:12:13-41
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:14:13-41
 intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.LAUNCHER
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:14:13-18:29
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:16:13-20:29
 action#android.intent.action.MAIN
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:15:17-69
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:17:17-69
 	android:name
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:15:25-66
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:17:25-66
 category#android.intent.category.LAUNCHER
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:17:17-77
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:19:17-77
 	android:name
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:17:27-74
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:19:27-74
 meta-data#android.support.FILE_PROVIDER_PATHS
-ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:26:13-28:54
+ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:28:13-30:54
 	android:resource
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:28:17-51
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:30:17-51
 	android:name
-		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:27:17-67
+		ADDED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml:29:17-67
 uses-sdk
 INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml reason: use-sdk injection requested
 INJECTED from /Users/dwarakeshtp/Documents/CrumbsAndSoulBilling/app/src/main/AndroidManifest.xml
