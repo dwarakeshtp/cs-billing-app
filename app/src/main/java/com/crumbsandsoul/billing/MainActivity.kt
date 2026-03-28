@@ -21,12 +21,14 @@ import android.os.Bundle
 import android.os.Environment
 import android.text.format.DateFormat
 import android.provider.ContactsContract
+import android.provider.Settings
 import android.widget.Toast
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -47,8 +49,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
@@ -68,6 +73,13 @@ import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
@@ -94,8 +106,17 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DrawerDefaults
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.LaunchedEffect
@@ -208,7 +229,8 @@ enum class AppSection(val title: String) {
     AddProduct("Product Details"),
     AddCustomer("Customer Details"),
     InvoiceHistory("Invoice History"),
-    SalesReports("Reports & Backup")
+    SalesReports("Reports"),
+    Backup("Backup")
 }
 
 class MainActivity : ComponentActivity() {
@@ -284,6 +306,7 @@ fun CrumbsAndSoulTheme(content: @Composable () -> Unit) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BillingApp() {
     val colorScheme = MaterialTheme.colorScheme
@@ -305,6 +328,10 @@ fun BillingApp() {
     val invoiceDraft = remember { InvoiceDraftState(storage.previewInvoiceNumber()) }
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    BackHandler(enabled = drawerState.isOpen) {
+        scope.launch { drawerState.close() }
+    }
     LaunchedEffect(Unit) {
         AutoBackupScheduler.reschedule(context.applicationContext)
     }
@@ -473,63 +500,105 @@ fun BillingApp() {
     val previewInvoiceNumberStable = remember(storage) { { storage.previewInvoiceNumber() } }
     val consumeInvoiceNumberStable = remember(storage) { { storage.consumeInvoiceNumber() } }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-        bottomBar = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(colorScheme.background)
-                    .padding(start = 8.dp, end = 8.dp, top = 8.dp, bottom = 14.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+    fun drawerNavLabel(destination: AppSection): String = when (destination) {
+        AppSection.GenerateInvoice -> "Invoice"
+        AppSection.AddProduct -> "Products"
+        AppSection.AddCustomer -> "Customers"
+        AppSection.InvoiceHistory -> "History"
+        AppSection.SalesReports -> "Reports"
+        AppSection.Backup -> "Backup"
+    }
+
+    fun drawerNavIcon(destination: AppSection) = when (destination) {
+        AppSection.GenerateInvoice -> Icons.Default.Description
+        AppSection.AddProduct -> Icons.Default.Category
+        AppSection.AddCustomer -> Icons.Default.People
+        AppSection.InvoiceHistory -> Icons.Default.History
+        AppSection.SalesReports -> Icons.Default.Assessment
+        AppSection.Backup -> Icons.Filled.Backup
+    }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        gesturesEnabled = true,
+        // We dim and dismiss taps outside the sheet ourselves (see Box below) so taps reliably close the drawer.
+        scrimColor = ComposeColor.Transparent,
+        drawerContent = {
+            ModalDrawerSheet(
+                modifier = Modifier.width(DrawerDefaults.MaximumDrawerWidth * 0.8f),
+                drawerContainerColor = colorScheme.surface,
+                drawerContentColor = colorScheme.onSurface
             ) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Crumbs & Soul",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 28.dp, vertical = 8.dp)
+                )
+                Text(
+                    text = "Billing",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .padding(horizontal = 28.dp)
+                        .padding(bottom = 12.dp)
+                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 AppSection.entries.forEach { destination ->
-                    val selected = destination == section
-                    val navLabel = when (destination) {
-                        AppSection.GenerateInvoice -> "Invoice"
-                        AppSection.AddProduct -> "Products"
-                        AppSection.AddCustomer -> "Customers"
-                        AppSection.InvoiceHistory -> "History"
-                        AppSection.SalesReports -> "Reports"
-                    }
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { section = destination }
-                            .background(
-                                if (selected) colorScheme.secondaryContainer else ComposeColor.Transparent,
-                                RoundedCornerShape(10.dp)
+                    NavigationDrawerItem(
+                        icon = {
+                            Icon(
+                                drawerNavIcon(destination),
+                                contentDescription = null
                             )
-                            .padding(vertical = 6.dp, horizontal = 4.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Spacer(
-                            modifier = Modifier
-                                .width(26.dp)
-                                .height(3.dp)
-                                .background(
-                                    if (selected) ComposeColor(0xFF5E6840) else ComposeColor.Transparent,
-                                    RoundedCornerShape(10.dp)
-                                )
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = navLabel,
-                            textAlign = TextAlign.Center,
-                            color = if (selected) ComposeColor(0xFF5E6840) else ComposeColor(0xFF2B2B2B),
-                            fontWeight = if (selected) FontWeight.ExtraBold else FontWeight.Bold,
-                            fontSize = 14.sp,
-                            lineHeight = 16.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            softWrap = false
-                        )
-                    }
+                        },
+                        label = { Text(drawerNavLabel(destination)) },
+                        selected = destination == section,
+                        onClick = {
+                            scope.launch { drawerState.close() }
+                            section = destination
+                        },
+                        colors = NavigationDrawerItemDefaults.colors(
+                            selectedContainerColor = colorScheme.secondaryContainer,
+                            selectedIconColor = ComposeColor(0xFF5E6840),
+                            selectedTextColor = ComposeColor(0xFF5E6840)
+                        ),
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                    )
                 }
+                Spacer(modifier = Modifier.weight(1f))
             }
         }
-    ) { padding ->
-        Column(
+    ) {
+        Box(Modifier.fillMaxSize()) {
+            Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            contentWindowInsets = WindowInsets.safeDrawing.only(
+                WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom
+            ),
+            topBar = {
+                TopAppBar(
+                    title = { Text(section.title) },
+                    navigationIcon = {
+                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                            Icon(
+                                Icons.Default.Menu,
+                                contentDescription = "Open navigation menu"
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = colorScheme.background,
+                        titleContentColor = colorScheme.onBackground,
+                        navigationIconContentColor = colorScheme.onBackground
+                    )
+                )
+            },
+            snackbarHost = { SnackbarHost(hostState = snackbarHostState) }
+            ) { padding ->
+            Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
@@ -548,8 +617,9 @@ fun BillingApp() {
                     }
                 }
                 .background(ComposeColor(0xFFF7F4EA))
-                .padding(16.dp)
-        ) {
+                .padding(horizontal = 16.dp)
+                .padding(top = 0.dp, bottom = 12.dp)
+            ) {
             when (section) {
                 AppSection.GenerateInvoice -> InvoiceScreen(
                     products = products,
@@ -559,7 +629,17 @@ fun BillingApp() {
                     onShareWhatsapp = onShareInvoiceWhatsapp,
                     previewInvoiceNumber = previewInvoiceNumberStable,
                     consumeInvoiceNumber = consumeInvoiceNumberStable,
-                    resetDraft = resetDraftStable
+                    resetDraft = resetDraftStable,
+                    onAddCustomer = { c ->
+                        customers.add(c)
+                        customers.sortCustomersByNameAsc()
+                        storage.saveCustomers(customers.toList())
+                    },
+                    onAddProduct = { p ->
+                        products.add(p)
+                        products.sortProductsByNameAsc()
+                        storage.saveProducts(products.toList())
+                    }
                 )
                 AppSection.AddProduct -> ProductScreen(
                     products = products,
@@ -652,7 +732,6 @@ fun BillingApp() {
                 AppSection.SalesReports -> SalesReportScreen(
                     records = invoiceHistory,
                     customers = customers,
-                    storage = storage,
                     onReportExported = { file ->
                         scope.launch {
                             val result = snackbarHostState.showSnackbar(
@@ -664,10 +743,28 @@ fun BillingApp() {
                                 openExportedFile(context, file)
                             }
                         }
-                    },
+                    }
+                )
+                AppSection.Backup -> BackupScreen(
+                    storage = storage,
                     onExportFullBackup = onExportFullBackupStable,
                     onImportFullBackup = onImportFullBackupStable,
                     onImportFullBackupFile = onImportFullBackupFileStable
+                )
+            }
+            }
+            }
+            if (drawerState.isOpen) {
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .background(colorScheme.onSurface.copy(alpha = 0.38f))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            scope.launch { drawerState.close() }
+                        }
                 )
             }
         }
@@ -695,7 +792,9 @@ fun InvoiceScreen(
     onShareWhatsapp: (InvoiceData, Boolean) -> File?,
     previewInvoiceNumber: () -> String,
     consumeInvoiceNumber: () -> String,
-    resetDraft: () -> Unit
+    resetDraft: () -> Unit,
+    onAddCustomer: (Customer) -> Unit,
+    onAddProduct: (Product) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -709,9 +808,13 @@ fun InvoiceScreen(
     }
     var customerSearch by remember { mutableStateOf(draft.customerSearch) }
     var customerSuggestionsVisible by remember { mutableStateOf(false) }
+    var showQuickAddCustomer by remember { mutableStateOf(false) }
+    /** When non-null, used as [QuickAddCustomerDialog] initial name instead of [customerSearch] (e.g. empty when + while a customer is selected). */
+    var quickAddCustomerInitialOverride by remember { mutableStateOf<String?>(null) }
     val lineItems = draft.lineItems
     var productSearch by remember { mutableStateOf(draft.productSearch) }
     var productSuggestionsVisible by remember { mutableStateOf(false) }
+    var showQuickAddProduct by remember { mutableStateOf(false) }
     var quantityInput by remember { mutableStateOf(draft.quantityInput) }
     var priceInput by remember { mutableStateOf(draft.priceInput) }
     var shippingChargesInput by remember { mutableStateOf(draft.shippingChargesInput) }
@@ -761,7 +864,6 @@ fun InvoiceScreen(
                 verticalAlignment = Alignment.Top
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("Generate Invoice", fontSize = 24.sp, fontWeight = FontWeight.Bold)
                     Text("Crumbs & Soul", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Invoice No: $invoiceNumber", fontWeight = FontWeight.SemiBold)
@@ -816,12 +918,24 @@ fun InvoiceScreen(
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Words,
             imeAction = ImeAction.Next
-        )
+        ),
+        trailingIcon = {
+            IconButton(
+                onClick = {
+                    customerSuggestionsVisible = false
+                    quickAddCustomerInitialOverride = if (selectedCustomer != null) "" else null
+                    showQuickAddCustomer = true
+                }
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add customer")
+            }
+        }
     )
-    if (customerSuggestionsVisible && selectedCustomer == null && customerSearch.isNotBlank() && filteredCustomers.isNotEmpty()) {
+    if (customerSuggestionsVisible && selectedCustomer == null && customerSearch.isNotBlank()) {
+        val customerMatches = filteredCustomers.take(5)
         Card(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), shape = RoundedCornerShape(10.dp)) {
             Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                filteredCustomers.take(5).forEach { customer ->
+                customerMatches.forEach { customer ->
                     TextButton(
                         onClick = {
                             selectedCustomer = customer
@@ -831,6 +945,18 @@ fun InvoiceScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("${customer.name} - ${customer.phone}", modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                if (customerMatches.isEmpty()) {
+                    TextButton(
+                        onClick = {
+                            customerSuggestionsVisible = false
+                            quickAddCustomerInitialOverride = null
+                            showQuickAddCustomer = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Add New Customer", fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -851,12 +977,23 @@ fun InvoiceScreen(
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.Words,
             imeAction = ImeAction.Next
-        )
+        ),
+        trailingIcon = {
+            IconButton(
+                onClick = {
+                    productSuggestionsVisible = false
+                    showQuickAddProduct = true
+                }
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add product")
+            }
+        }
     )
-    if (productSuggestionsVisible && productSearch.isNotBlank() && filteredProducts.isNotEmpty()) {
+    if (productSuggestionsVisible && productSearch.isNotBlank()) {
+        val productMatches = filteredProducts.take(6)
         Card(modifier = Modifier.fillMaxWidth().padding(top = 4.dp), shape = RoundedCornerShape(10.dp)) {
             Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                filteredProducts.take(6).forEach { product ->
+                productMatches.forEach { product ->
                     TextButton(
                         onClick = {
                             productSearch = product.name
@@ -866,6 +1003,17 @@ fun InvoiceScreen(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(product.name, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                if (productMatches.isEmpty()) {
+                    TextButton(
+                        onClick = {
+                            productSuggestionsVisible = false
+                            showQuickAddProduct = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Add New Product", fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -1118,6 +1266,36 @@ fun InvoiceScreen(
     draft.invoiceNumber = invoiceNumber
     draft.invoiceDate = invoiceDate
 
+    QuickAddCustomerDialog(
+        customers = customers,
+        context = context,
+        expanded = showQuickAddCustomer,
+        initialName = quickAddCustomerInitialOverride ?: customerSearch,
+        onDismiss = {
+            showQuickAddCustomer = false
+            quickAddCustomerInitialOverride = null
+        },
+        onCustomerSaved = { c ->
+            onAddCustomer(c)
+            selectedCustomer = c
+            customerSearch = c.name
+            customerSuggestionsVisible = false
+        }
+    )
+
+    QuickAddProductDialog(
+        products = products,
+        expanded = showQuickAddProduct,
+        initialName = productSearch,
+        onDismiss = { showQuickAddProduct = false },
+        onProductSaved = { p ->
+            onAddProduct(p)
+            productSearch = p.name
+            priceInput = p.defaultPrice.roundToInt().toString()
+            productSuggestionsVisible = false
+        }
+    )
+
     if (editIndex >= 0) {
         AlertDialog(
             onDismissRequest = { editIndex = -1 },
@@ -1198,8 +1376,6 @@ fun ProductScreen(
         }
     }
 
-    Text("Product Details", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-    Spacer(modifier = Modifier.height(12.dp))
     Text("New product details", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
     Spacer(modifier = Modifier.height(8.dp))
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
@@ -1457,36 +1633,38 @@ private fun grantReadToWhatsAppPackages(context: Context, uris: Collection<Uri>)
     }
 }
 
+private fun launchPhoneContactPickerForResult(launcher: androidx.activity.result.ActivityResultLauncher<Intent>) {
+    val pickIntent = Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
+    launcher.launch(pickIntent)
+}
+
+/** Same fields as the Customers tab “Add customer” dialog; reusable from Generate Invoice search. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CustomerScreen(
+private fun QuickAddCustomerDialog(
     customers: List<Customer>,
     context: Context,
-    onAdd: (String, String, String, String) -> Unit,
-    onUpdateCustomer: (oldPhone: String, newName: String, newPhone: String, newGst: String, newAddress: String) -> Unit,
-    onDelete: (Int) -> Unit
+    expanded: Boolean,
+    initialName: String,
+    onDismiss: () -> Unit,
+    onCustomerSaved: (Customer) -> Unit
 ) {
-    fun launchPhoneContactPicker(launcher: androidx.activity.result.ActivityResultLauncher<Intent>) {
-        val pickIntent = Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)
-        launcher.launch(pickIntent)
-    }
-
     var addName by remember { mutableStateOf("") }
     var addPhone by remember { mutableStateOf("") }
     var addGst by remember { mutableStateOf("") }
     var addAddress by remember { mutableStateOf("") }
     val keyboardController = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
-    var showAddCustomerDialog by remember { mutableStateOf(false) }
-    var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
-    var editingCustomer by remember { mutableStateOf<Customer?>(null) }
-    var editCustName by remember { mutableStateOf("") }
-    var editCustPhone by remember { mutableStateOf("") }
-    var editCustGst by remember { mutableStateOf("") }
-    var editCustAddress by remember { mutableStateOf("") }
-    var viewCustomer by remember { mutableStateOf<Customer?>(null) }
-
     val addScroll = rememberScrollState()
-    val editScroll = rememberScrollState()
+
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            addName = initialName.trim()
+            addPhone = ""
+            addGst = ""
+            addAddress = ""
+        }
+    }
 
     val contactPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -1526,20 +1704,260 @@ fun CustomerScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            launchPhoneContactPicker(contactPickerLauncher)
+            launchPhoneContactPickerForResult(contactPickerLauncher)
         } else {
             Toast.makeText(context, "Contacts permission denied", Toast.LENGTH_SHORT).show()
         }
     }
-    Text("Customer Details", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-    Spacer(modifier = Modifier.height(12.dp))
+
+    val normalizedAddPhone = normalizeWhatsAppPhone(addPhone)
+    val addPhoneDuplicate =
+        normalizedAddPhone != null &&
+            customers.any { normalizeWhatsAppPhone(it.phone) == normalizedAddPhone }
+    val canSaveNewCustomer =
+        addName.trim().isNotBlank() &&
+            normalizedAddPhone != null &&
+            !addPhoneDuplicate
+
+    if (!expanded) return
+
+    AlertDialog(
+        onDismissRequest = {
+            onDismiss()
+            focusManager.clearFocus()
+            keyboardController?.hide()
+        },
+        title = { Text("Add customer") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(addScroll),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = addName,
+                    onValueChange = { addName = it },
+                    label = { Text("Name *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                OutlinedTextField(
+                    value = addPhone,
+                    onValueChange = { addPhone = it.filter { ch -> ch.isDigit() }.take(10) },
+                    isError = addPhoneDuplicate,
+                    label = { Text("Phone number *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Phone,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                if (addPhoneDuplicate) {
+                    Text(
+                        "This phone number is already saved for another customer",
+                        color = ComposeColor(0xFFB00020),
+                        fontSize = 12.sp
+                    )
+                }
+                OutlinedTextField(
+                    value = addAddress,
+                    onValueChange = { addAddress = it },
+                    label = { Text("Address (optional)") },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 5,
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Sentences,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                OutlinedTextField(
+                    value = addGst,
+                    onValueChange = { addGst = it },
+                    label = { Text("GST (optional)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    modifier = Modifier.fillMaxWidth(),
+                    onClick = {
+                        val hasPermission = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.READ_CONTACTS
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasPermission) {
+                            launchPhoneContactPickerForResult(contactPickerLauncher)
+                        } else {
+                            contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
+                        }
+                    }
+                ) { Text("Pick from Contacts") }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSaveNewCustomer,
+                onClick = {
+                    val normalized = normalizeWhatsAppPhone(addPhone) ?: return@TextButton
+                    if (customers.any { normalizeWhatsAppPhone(it.phone) == normalized }) {
+                        Toast.makeText(context, "Duplicate phone number not allowed", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    val displayPhone = formatPhoneForDisplay(normalized)
+                    onCustomerSaved(
+                        Customer(
+                            addName.trim(),
+                            displayPhone,
+                            addGst.trim(),
+                            addAddress.trim()
+                        )
+                    )
+                    onDismiss()
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    Toast.makeText(context, "Customer saved", Toast.LENGTH_SHORT).show()
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                onDismiss()
+                focusManager.clearFocus()
+                keyboardController?.hide()
+            }) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+private fun QuickAddProductDialog(
+    products: List<Product>,
+    expanded: Boolean,
+    initialName: String,
+    onDismiss: () -> Unit,
+    onProductSaved: (Product) -> Unit
+) {
+    val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    var name by remember { mutableStateOf("") }
+    var price by remember { mutableStateOf("") }
+
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            name = initialName.trim()
+            price = ""
+        }
+    }
+
+    val priceInt = price.toIntOrNull()
+    val nameNorm = name.trim().lowercase(Locale.getDefault())
+    val duplicate =
+        name.trim().isNotBlank() &&
+            products.any { it.name.trim().lowercase(Locale.getDefault()) == nameNorm }
+    val canSave =
+        name.trim().isNotBlank() &&
+            priceInt != null &&
+            priceInt >= 0 &&
+            !duplicate
+
+    if (!expanded) return
+
+    AlertDialog(
+        onDismissRequest = {
+            onDismiss()
+            focusManager.clearFocus()
+            keyboardController?.hide()
+        },
+        title = { Text("Add product") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    isError = duplicate,
+                    label = { Text("Product name *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(
+                        capitalization = KeyboardCapitalization.Words,
+                        imeAction = ImeAction.Next
+                    )
+                )
+                if (duplicate) {
+                    Text(
+                        "Product with this name already exists",
+                        color = ComposeColor(0xFFB00020),
+                        fontSize = 12.sp
+                    )
+                }
+                OutlinedTextField(
+                    value = price,
+                    onValueChange = { price = it.filter { ch -> ch.isDigit() } },
+                    label = { Text("Default unit price *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number,
+                        imeAction = ImeAction.Done
+                    )
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = canSave,
+                onClick = {
+                    val p = priceInt ?: return@TextButton
+                    val trimmed = name.trim()
+                    val normalized = trimmed.lowercase(Locale.getDefault())
+                    if (products.any { it.name.trim().lowercase(Locale.getDefault()) == normalized }) {
+                        Toast.makeText(context, "Duplicate product name not allowed", Toast.LENGTH_SHORT).show()
+                        return@TextButton
+                    }
+                    onProductSaved(Product(trimmed, p.toDouble()))
+                    onDismiss()
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                    Toast.makeText(context, "Product saved", Toast.LENGTH_SHORT).show()
+                }
+            ) { Text("Save") }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                onDismiss()
+                focusManager.clearFocus()
+                keyboardController?.hide()
+            }) { Text("Cancel") }
+        }
+    )
+}
+
+@Composable
+fun CustomerScreen(
+    customers: List<Customer>,
+    context: Context,
+    onAdd: (String, String, String, String) -> Unit,
+    onUpdateCustomer: (oldPhone: String, newName: String, newPhone: String, newGst: String, newAddress: String) -> Unit,
+    onDelete: (Int) -> Unit
+) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    var showAddCustomerDialog by remember { mutableStateOf(false) }
+    var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var editingCustomer by remember { mutableStateOf<Customer?>(null) }
+    var editCustName by remember { mutableStateOf("") }
+    var editCustPhone by remember { mutableStateOf("") }
+    var editCustGst by remember { mutableStateOf("") }
+    var editCustAddress by remember { mutableStateOf("") }
+    var viewCustomer by remember { mutableStateOf<Customer?>(null) }
+
+    val editScroll = rememberScrollState()
+
     Button(
         modifier = Modifier.fillMaxWidth(),
         onClick = {
-            addName = ""
-            addPhone = ""
-            addGst = ""
-            addAddress = ""
             showAddCustomerDialog = true
         }
     ) {
@@ -1628,123 +2046,20 @@ fun CustomerScreen(
         }
     }
 
-    val normalizedAddPhone = normalizeWhatsAppPhone(addPhone)
-    val addPhoneDuplicate =
-        normalizedAddPhone != null &&
-            customers.any { normalizeWhatsAppPhone(it.phone) == normalizedAddPhone }
-    val canSaveNewCustomer =
-        addName.trim().isNotBlank() &&
-            normalizedAddPhone != null &&
-            !addPhoneDuplicate
-
-    if (showAddCustomerDialog) {
-        AlertDialog(
-            onDismissRequest = {
-                showAddCustomerDialog = false
-                focusManager.clearFocus()
-                keyboardController?.hide()
-            },
-            title = { Text("Add customer") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 480.dp)
-                        .verticalScroll(addScroll),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedTextField(
-                        value = addName,
-                        onValueChange = { addName = it },
-                        label = { Text("Name *") },
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Words,
-                            imeAction = ImeAction.Next
-                        )
-                    )
-                    OutlinedTextField(
-                        value = addPhone,
-                        onValueChange = { addPhone = it.filter { ch -> ch.isDigit() }.take(10) },
-                        isError = addPhoneDuplicate,
-                        label = { Text("Phone number *") },
-                        modifier = Modifier.fillMaxWidth(),
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Phone,
-                            imeAction = ImeAction.Next
-                        )
-                    )
-                    if (addPhoneDuplicate) {
-                        Text(
-                            "This phone number is already saved for another customer",
-                            color = ComposeColor(0xFFB00020),
-                            fontSize = 12.sp
-                        )
-                    }
-                    OutlinedTextField(
-                        value = addAddress,
-                        onValueChange = { addAddress = it },
-                        label = { Text("Address (optional)") },
-                        modifier = Modifier.fillMaxWidth(),
-                        minLines = 2,
-                        maxLines = 5,
-                        keyboardOptions = KeyboardOptions(
-                            capitalization = KeyboardCapitalization.Sentences,
-                            imeAction = ImeAction.Next
-                        )
-                    )
-                    OutlinedTextField(
-                        value = addGst,
-                        onValueChange = { addGst = it },
-                        label = { Text("GST (optional)") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Button(
-                        modifier = Modifier.fillMaxWidth(),
-                        onClick = {
-                            val hasPermission = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.READ_CONTACTS
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (hasPermission) {
-                                launchPhoneContactPicker(contactPickerLauncher)
-                            } else {
-                                contactsPermissionLauncher.launch(Manifest.permission.READ_CONTACTS)
-                            }
-                        }
-                    ) { Text("Pick from Contacts") }
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = canSaveNewCustomer,
-                    onClick = {
-                        val normalized = normalizeWhatsAppPhone(addPhone) ?: return@TextButton
-                        if (customers.any { normalizeWhatsAppPhone(it.phone) == normalized }) {
-                            Toast.makeText(context, "Duplicate phone number not allowed", Toast.LENGTH_SHORT).show()
-                            return@TextButton
-                        }
-                        val displayPhone = formatPhoneForDisplay(normalized)
-                        onAdd(addName.trim(), displayPhone, addGst.trim(), addAddress.trim())
-                        showAddCustomerDialog = false
-                        addName = ""
-                        addPhone = ""
-                        addGst = ""
-                        addAddress = ""
-                        focusManager.clearFocus()
-                        keyboardController?.hide()
-                        Toast.makeText(context, "Customer saved", Toast.LENGTH_SHORT).show()
-                    }
-                ) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showAddCustomerDialog = false
-                    focusManager.clearFocus()
-                    keyboardController?.hide()
-                }) { Text("Cancel") }
-            }
-        )
-    }
+    QuickAddCustomerDialog(
+        customers = customers,
+        context = context,
+        expanded = showAddCustomerDialog,
+        initialName = "",
+        onDismiss = {
+            showAddCustomerDialog = false
+            focusManager.clearFocus()
+            keyboardController?.hide()
+        },
+        onCustomerSaved = { c ->
+            onAdd(c.name, c.phone, c.gst, c.address)
+        }
+    )
 
     if (editingCustomer != null) {
         val orig = editingCustomer!!
@@ -2157,8 +2472,6 @@ fun InvoiceHistoryScreen(
         }
     }
 
-    Text("Invoice History", fontSize = 22.sp, fontWeight = FontWeight.Bold)
-    Spacer(modifier = Modifier.height(12.dp))
     DropdownField(
         label = "Customer Filter",
         value = customerFilter,
@@ -2749,18 +3062,14 @@ data class ReportInvoicePdfRow(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SalesReportScreen(
-    records: List<InvoiceRecord>,
-    customers: List<Customer>,
+fun BackupScreen(
     storage: BillingStorage,
-    onReportExported: (File) -> Unit,
     onExportFullBackup: () -> Unit,
     onImportFullBackup: (Uri) -> Unit,
     onImportFullBackupFile: (File) -> Unit
 ) {
     val context = LocalContext.current
     val importScope = rememberCoroutineScope()
-    var showBackupDetailDialog by remember { mutableStateOf(false) }
     var showImportBackupDialog by remember { mutableStateOf(false) }
     var showRestoreConfirmDialog by remember { mutableStateOf(false) }
     var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
@@ -2797,59 +3106,7 @@ fun SalesReportScreen(
             ).show()
         }
     }
-    val reportTypeOptions = listOf("Month-wise", "Customer-wise")
-    val formatOptions = listOf("PDF", "Excel")
-    val monthOptions = remember(records) {
-        buildList {
-            add("All Months")
-            addAll(records.map { monthKey(it.createdAtMillis) }.distinct().sortedDescending())
-        }
-    }
-    val customerOptions = remember(records) {
-        buildList {
-            add("All Customers")
-            addAll(records.map { it.customerName }.distinct().sorted())
-        }
-    }
-
-    var reportType by remember { mutableStateOf(reportTypeOptions.first()) }
-    var exportFormat by remember { mutableStateOf(formatOptions.first()) }
-    var monthFilter by remember { mutableStateOf("All Months") }
-    var customerFilter by remember { mutableStateOf("All Customers") }
-    var reportTypeExpanded by remember { mutableStateOf(false) }
-    var formatExpanded by remember { mutableStateOf(false) }
-    var monthExpanded by remember { mutableStateOf(false) }
-    var customerExpanded by remember { mutableStateOf(false) }
-
-    LaunchedEffect(monthOptions, monthFilter) {
-        if (monthFilter !in monthOptions) monthFilter = "All Months"
-    }
-    LaunchedEffect(customerOptions, customerFilter) {
-        if (customerFilter !in customerOptions) customerFilter = "All Customers"
-    }
-
-    val filtered = remember(records, monthFilter, customerFilter) {
-        records.filter {
-            val monthMatch = monthFilter == "All Months" || monthKey(it.createdAtMillis) == monthFilter
-            val customerMatch = customerFilter == "All Customers" || it.customerName == customerFilter
-            monthMatch && customerMatch
-        }
-    }
-    val rows = remember(filtered, reportType) { buildReportRows(filtered, reportType) }
-    val previewRows = remember(records) {
-        val now = Instant.now().atZone(ZoneId.systemDefault())
-        val currentMonth = now.year * 12 + now.monthValue
-        val last12 = records.filter { record ->
-            if (record.createdAtMillis <= 0L) return@filter false
-            val d = Instant.ofEpochMilli(record.createdAtMillis).atZone(ZoneId.systemDefault())
-            val recordMonth = d.year * 12 + d.monthValue
-            currentMonth - recordMonth in 0..11
-        }
-        buildReportRows(last12, "Month-wise")
-    }
-
     val pageScrollState = rememberScrollState()
-    val backupDialogScrollState = rememberScrollState()
     val importBackupDialogScrollState = rememberScrollState()
     val autoBackupFrequencyOptions = remember {
         listOf(
@@ -2865,15 +3122,23 @@ fun SalesReportScreen(
     var autoBackupHour by remember { mutableIntStateOf(0) }
     var autoBackupMinute by remember { mutableIntStateOf(0) }
     var showAutoBackupTimePicker by remember { mutableStateOf(false) }
-    LaunchedEffect(showBackupDetailDialog) {
-        if (showBackupDetailDialog) {
-            autoBackupEnabled = storage.isAutoBackupEnabled()
-            val days = storage.getAutoBackupIntervalDays()
-            autoBackupFreqLabel = autoBackupFrequencyOptions.firstOrNull { it.second == days }?.first
-                ?: autoBackupFrequencyOptions.first().first
-            autoBackupHour = storage.getAutoBackupHour()
-            autoBackupMinute = storage.getAutoBackupMinute()
-            AutoBackupNotifications.ensureChannel(context.applicationContext)
+
+    LaunchedEffect(Unit) {
+        autoBackupEnabled = storage.isAutoBackupEnabled()
+        val days = storage.getAutoBackupIntervalDays()
+        autoBackupFreqLabel = autoBackupFrequencyOptions.firstOrNull { it.second == days }?.first
+            ?: autoBackupFrequencyOptions.first().first
+        autoBackupHour = storage.getAutoBackupHour()
+        autoBackupMinute = storage.getAutoBackupMinute()
+        AutoBackupNotifications.ensureChannel(context.applicationContext)
+    }
+    // Ask for POST_NOTIFICATIONS whenever this screen is shown with auto backup on (not only on first toggle).
+    LaunchedEffect(autoBackupEnabled) {
+        if (autoBackupEnabled && Build.VERSION.SDK_INT >= 33) {
+            val perm = Manifest.permission.POST_NOTIFICATIONS
+            if (ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED) {
+                postNotificationsLauncher.launch(perm)
+            }
         }
     }
 
@@ -2883,257 +3148,157 @@ fun SalesReportScreen(
             .verticalScroll(pageScrollState)
             .padding(bottom = 24.dp)
     ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
         Text(
-            AppSection.SalesReports.title,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.weight(1f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
+            "Export all products, customers, invoice history, and PDFs as a single ZIP archive. " +
+                "Share or save it (Drive, email, Files, etc.). On a new phone, install the app and use Import to restore."
         )
-        IconButton(
-            onClick = { showBackupDetailDialog = true },
-            modifier = Modifier.size(48.dp)
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            "Import replaces all products, customers, and invoice history on this device and " +
+                "rebuilds invoice PDFs from the backup. You can tap the latest backup below or choose any .zip file.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        HorizontalDivider()
+        Spacer(modifier = Modifier.height(12.dp))
+        Text("Automatic backup", fontWeight = FontWeight.SemiBold)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            "Runs on your schedule (device local time). Only one file is kept; each run replaces " +
+                AutoBackupScheduler.autoBackupZipFile(context).name + " in app storage. " +
+                "You’ll get a notification after each run (success or failure) if notifications are allowed.",
+            fontSize = 13.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (autoBackupEnabled && !AutoBackupNotifications.canShowNotifications(context)) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "Notifications are off for this app. Scheduled backups still run, but you won’t get success or failure alerts. Turn them on in system settings.",
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.error
+            )
+            TextButton(
+                onClick = {
+                    try {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            }
+                        )
+                    } catch (_: Exception) {
+                        Toast.makeText(
+                            context,
+                            "Open Settings → Apps → Notifications for this app",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                },
+                modifier = Modifier.padding(top = 4.dp)
+            ) { Text("Open notification settings") }
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = Icons.Filled.Backup,
-                contentDescription = "Full app backup",
-                tint = MaterialTheme.colorScheme.primary
+            Text("Enable automatic backup", modifier = Modifier.weight(1f).padding(end = 8.dp))
+            Switch(
+                checked = autoBackupEnabled,
+                onCheckedChange = { on ->
+                    autoBackupEnabled = on
+                    storage.setAutoBackupEnabled(on)
+                    if (on) {
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            val perm = Manifest.permission.POST_NOTIFICATIONS
+                            if (ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED) {
+                                postNotificationsLauncher.launch(perm)
+                            }
+                        }
+                    }
+                    AutoBackupScheduler.reschedule(context.applicationContext)
+                }
             )
         }
-    }
-    Spacer(modifier = Modifier.height(12.dp))
-    DropdownField(
-        label = "Report Type",
-        value = reportType,
-        options = reportTypeOptions,
-        expanded = reportTypeExpanded,
-        onExpanded = { reportTypeExpanded = it },
-        onSelect = { reportType = it }
-    )
-    DropdownField(
-        label = "Month Filter",
-        value = monthFilter,
-        options = monthOptions,
-        expanded = monthExpanded,
-        onExpanded = { monthExpanded = it },
-        onSelect = { monthFilter = it }
-    )
-    DropdownField(
-        label = "Customer Filter",
-        value = customerFilter,
-        options = customerOptions,
-        expanded = customerExpanded,
-        onExpanded = { customerExpanded = it },
-        onSelect = { customerFilter = it }
-    )
-    DropdownField(
-        label = "Export Format",
-        value = exportFormat,
-        options = formatOptions,
-        expanded = formatExpanded,
-        onExpanded = { formatExpanded = it },
-        onSelect = { exportFormat = it }
-    )
-
-    Spacer(modifier = Modifier.height(8.dp))
-    Text("Preview (Month-wise, Last 12 Months)", fontWeight = FontWeight.SemiBold)
-    if (previewRows.isEmpty()) {
-        Text("No data for the last 12 months.")
-    } else {
-        // Column (not LazyColumn) so this screen can use one outer verticalScroll without nested scroll issues.
-        Column(modifier = Modifier.fillMaxWidth()) {
-            previewRows.take(12).forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(row.key)
-                    Text("${row.invoiceCount} invoices | ₹${money(row.totalSales)}")
-                }
-                HorizontalDivider()
-            }
-        }
-    }
-
-    Button(
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        onClick = {
-            if (rows.isEmpty()) {
-                Toast.makeText(context, "No report data to export", Toast.LENGTH_SHORT).show()
-                return@Button
-            }
-            val file = if (exportFormat == "PDF") {
-                createSalesReportPdf(context, reportType, monthFilter, customerFilter, rows, filtered)
-            } else {
-                createSalesReportExcel(context, reportType, monthFilter, customerFilter, rows, filtered, customers)
-            }
-            if (file != null) {
-                onReportExported(file)
-            } else {
-                Toast.makeText(context, "Failed to export report", Toast.LENGTH_SHORT).show()
-            }
-        }
-    ) {
-        Text("Generate & Export")
-    }
-    }
-
-    if (showBackupDetailDialog) {
-        AlertDialog(
-            onDismissRequest = { showBackupDetailDialog = false },
-            title = { Text("Full app backup") },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 560.dp)
-                        .verticalScroll(backupDialogScrollState)
-                ) {
-                    Text(
-                        "Export all products, customers, invoice history, and PDFs as a single ZIP archive. " +
-                            "Share or save it (Drive, email, Files, etc.). On a new phone, install the app and use Import to restore."
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        "Import replaces all products, customers, and invoice history on this device and " +
-                            "rebuilds invoice PDFs from the backup. You can tap the latest backup below or choose any .zip file.",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text("Automatic backup", fontWeight = FontWeight.SemiBold)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        "Runs on your schedule (device local time). Only one file is kept; each run replaces " +
-                            AutoBackupScheduler.autoBackupZipFile(context).name + " in app storage. " +
-                            "You’ll get a notification after each run (success or failure) if notifications are allowed.",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Enable automatic backup", modifier = Modifier.weight(1f).padding(end = 8.dp))
-                        Switch(
-                            checked = autoBackupEnabled,
-                            onCheckedChange = { on ->
-                                autoBackupEnabled = on
-                                storage.setAutoBackupEnabled(on)
-                                if (on) {
-                                    if (Build.VERSION.SDK_INT >= 33) {
-                                        val perm = Manifest.permission.POST_NOTIFICATIONS
-                                        if (ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED) {
-                                            postNotificationsLauncher.launch(perm)
-                                        }
-                                    }
-                                }
-                                AutoBackupScheduler.reschedule(context.applicationContext)
-                            }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    DropdownField(
-                        label = "Backup frequency",
-                        value = autoBackupFreqLabel,
-                        options = autoBackupFrequencyOptions.map { it.first },
-                        expanded = autoBackupFreqExpanded,
-                        onExpanded = { autoBackupFreqExpanded = it },
-                        onSelect = { label ->
-                            autoBackupFreqLabel = label
-                            val days = autoBackupFrequencyOptions.firstOrNull { it.first == label }?.second ?: 1
-                            storage.setAutoBackupIntervalDays(days)
-                            AutoBackupScheduler.reschedule(context.applicationContext)
-                            autoBackupFreqExpanded = false
-                        }
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text("Backup time", fontWeight = FontWeight.Medium, fontSize = 14.sp)
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedButton(
-                        onClick = { showAutoBackupTimePicker = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            formatAutoBackupTimeLabel(context, autoBackupHour, autoBackupMinute),
-                            modifier = Modifier.padding(vertical = 4.dp)
-                        )
-                    }
-                    Text(
-                        "Uses the device’s time zone. Longer intervals run on this clock time every N days.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    HorizontalDivider()
-                    Spacer(modifier = Modifier.height(16.dp))
-                    val backupActionBtnHeight = 72.dp
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Button(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(backupActionBtnHeight),
-                            onClick = {
-                                onExportFullBackup()
-                                showBackupDetailDialog = false
-                            }
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    "Export backup",
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 2,
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
-                        Button(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(backupActionBtnHeight),
-                            onClick = {
-                                showBackupDetailDialog = false
-                                showImportBackupDialog = true
-                            }
-                        ) {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    "Import backup",
-                                    textAlign = TextAlign.Center,
-                                    maxLines = 2,
-                                    style = MaterialTheme.typography.labelLarge
-                                )
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showBackupDetailDialog = false }) {
-                    Text("Close")
-                }
+        Spacer(modifier = Modifier.height(8.dp))
+        DropdownField(
+            label = "Backup frequency",
+            value = autoBackupFreqLabel,
+            options = autoBackupFrequencyOptions.map { it.first },
+            expanded = autoBackupFreqExpanded,
+            onExpanded = { autoBackupFreqExpanded = it },
+            onSelect = { label ->
+                autoBackupFreqLabel = label
+                val days = autoBackupFrequencyOptions.firstOrNull { it.first == label }?.second ?: 1
+                storage.setAutoBackupIntervalDays(days)
+                AutoBackupScheduler.reschedule(context.applicationContext)
+                autoBackupFreqExpanded = false
             }
         )
+        Spacer(modifier = Modifier.height(10.dp))
+        Text("Backup time", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+        Spacer(modifier = Modifier.height(4.dp))
+        OutlinedButton(
+            onClick = { showAutoBackupTimePicker = true },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                formatAutoBackupTimeLabel(context, autoBackupHour, autoBackupMinute),
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        }
+        Text(
+            "Uses the device’s time zone. Longer intervals run on this clock time every N days.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        HorizontalDivider()
+        Spacer(modifier = Modifier.height(16.dp))
+        val backupActionBtnHeight = 72.dp
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(backupActionBtnHeight),
+                onClick = { onExportFullBackup() }
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Export backup",
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+            Button(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(backupActionBtnHeight),
+                onClick = { showImportBackupDialog = true }
+            ) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "Import backup",
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+            }
+        }
     }
 
     if (showAutoBackupTimePicker) {
@@ -3346,6 +3511,151 @@ fun SalesReportScreen(
             }
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SalesReportScreen(
+    records: List<InvoiceRecord>,
+    customers: List<Customer>,
+    onReportExported: (File) -> Unit
+) {
+    val context = LocalContext.current
+    val reportTypeOptions = listOf("Month-wise", "Customer-wise")
+    val formatOptions = listOf("PDF", "Excel")
+    val monthOptions = remember(records) {
+        buildList {
+            add("All Months")
+            addAll(records.map { monthKey(it.createdAtMillis) }.distinct().sortedDescending())
+        }
+    }
+    val customerOptions = remember(records) {
+        buildList {
+            add("All Customers")
+            addAll(records.map { it.customerName }.distinct().sorted())
+        }
+    }
+
+    var reportType by remember { mutableStateOf(reportTypeOptions.first()) }
+    var exportFormat by remember { mutableStateOf(formatOptions.first()) }
+    var monthFilter by remember { mutableStateOf("All Months") }
+    var customerFilter by remember { mutableStateOf("All Customers") }
+    var reportTypeExpanded by remember { mutableStateOf(false) }
+    var formatExpanded by remember { mutableStateOf(false) }
+    var monthExpanded by remember { mutableStateOf(false) }
+    var customerExpanded by remember { mutableStateOf(false) }
+
+    LaunchedEffect(monthOptions, monthFilter) {
+        if (monthFilter !in monthOptions) monthFilter = "All Months"
+    }
+    LaunchedEffect(customerOptions, customerFilter) {
+        if (customerFilter !in customerOptions) customerFilter = "All Customers"
+    }
+
+    val filtered = remember(records, monthFilter, customerFilter) {
+        records.filter {
+            val monthMatch = monthFilter == "All Months" || monthKey(it.createdAtMillis) == monthFilter
+            val customerMatch = customerFilter == "All Customers" || it.customerName == customerFilter
+            monthMatch && customerMatch
+        }
+    }
+    val rows = remember(filtered, reportType) { buildReportRows(filtered, reportType) }
+    val previewRows = remember(records) {
+        val now = Instant.now().atZone(ZoneId.systemDefault())
+        val currentMonth = now.year * 12 + now.monthValue
+        val last12 = records.filter { record ->
+            if (record.createdAtMillis <= 0L) return@filter false
+            val d = Instant.ofEpochMilli(record.createdAtMillis).atZone(ZoneId.systemDefault())
+            val recordMonth = d.year * 12 + d.monthValue
+            currentMonth - recordMonth in 0..11
+        }
+        buildReportRows(last12, "Month-wise")
+    }
+
+    val pageScrollState = rememberScrollState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(pageScrollState)
+            .padding(bottom = 24.dp)
+    ) {
+    DropdownField(
+        label = "Report Type",
+        value = reportType,
+        options = reportTypeOptions,
+        expanded = reportTypeExpanded,
+        onExpanded = { reportTypeExpanded = it },
+        onSelect = { reportType = it }
+    )
+    DropdownField(
+        label = "Month Filter",
+        value = monthFilter,
+        options = monthOptions,
+        expanded = monthExpanded,
+        onExpanded = { monthExpanded = it },
+        onSelect = { monthFilter = it }
+    )
+    DropdownField(
+        label = "Customer Filter",
+        value = customerFilter,
+        options = customerOptions,
+        expanded = customerExpanded,
+        onExpanded = { customerExpanded = it },
+        onSelect = { customerFilter = it }
+    )
+    DropdownField(
+        label = "Export Format",
+        value = exportFormat,
+        options = formatOptions,
+        expanded = formatExpanded,
+        onExpanded = { formatExpanded = it },
+        onSelect = { exportFormat = it }
+    )
+
+    Spacer(modifier = Modifier.height(8.dp))
+    Text("Preview (Month-wise, Last 12 Months)", fontWeight = FontWeight.SemiBold)
+    if (previewRows.isEmpty()) {
+        Text("No data for the last 12 months.")
+    } else {
+        // Column (not LazyColumn) so this screen can use one outer verticalScroll without nested scroll issues.
+        Column(modifier = Modifier.fillMaxWidth()) {
+            previewRows.take(12).forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(row.key)
+                    Text("${row.invoiceCount} invoices | ₹${money(row.totalSales)}")
+                }
+                HorizontalDivider()
+            }
+        }
+    }
+
+    Button(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        onClick = {
+            if (rows.isEmpty()) {
+                Toast.makeText(context, "No report data to export", Toast.LENGTH_SHORT).show()
+                return@Button
+            }
+            val file = if (exportFormat == "PDF") {
+                createSalesReportPdf(context, reportType, monthFilter, customerFilter, rows, filtered)
+            } else {
+                createSalesReportExcel(context, reportType, monthFilter, customerFilter, rows, filtered, customers)
+            }
+            if (file != null) {
+                onReportExported(file)
+            } else {
+                Toast.makeText(context, "Failed to export report", Toast.LENGTH_SHORT).show()
+            }
+        }
+    ) {
+        Text("Generate & Export")
+    }
+    }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3621,6 +3931,10 @@ private fun formatAutoBackupTimeLabel(context: Context, hour: Int, minute: Int):
     return DateFormat.getTimeFormat(context).format(cal.time)
 }
 
+/**
+ * JSON + SharedPreferences persistence. Keep `prefs` name and JSON field names stable so upgrades
+ * over older installs keep products, customers, invoice history, counters, and auto-backup settings.
+ */
 class BillingStorage(context: Context) {
     private val prefs = context.getSharedPreferences("billing_store", Context.MODE_PRIVATE)
     private val productsKey = "products"
@@ -3668,11 +3982,19 @@ class BillingStorage(context: Context) {
 
     fun loadProducts(): List<Product> {
         val raw = prefs.getString(productsKey, "[]") ?: "[]"
-        val arr = JSONArray(raw)
+        val arr = try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            return emptyList()
+        }
         return buildList {
             for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                add(Product(obj.getString("name"), obj.getDouble("defaultPrice").roundToInt().toDouble()))
+                val obj = arr.optJSONObject(i) ?: continue
+                val name = obj.optString("name", "").trim()
+                val price = obj.optDouble("defaultPrice", -1.0)
+                if (name.isNotBlank() && price >= 0.0) {
+                    add(Product(name, price.roundToInt().toDouble()))
+                }
             }
         }
     }
@@ -3692,14 +4014,21 @@ class BillingStorage(context: Context) {
 
     fun loadCustomers(): List<Customer> {
         val raw = prefs.getString(customersKey, "[]") ?: "[]"
-        val arr = JSONArray(raw)
+        val arr = try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            return emptyList()
+        }
         return buildList {
             for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
+                val obj = arr.optJSONObject(i) ?: continue
+                val name = obj.optString("name", "").trim()
+                val phone = obj.optString("phone", "").trim()
+                if (name.isBlank() || phone.isBlank()) continue
                 add(
                     Customer(
-                        obj.getString("name"),
-                        obj.getString("phone"),
+                        name,
+                        phone,
                         obj.optString("gst", ""),
                         obj.optString("address", "")
                     )
@@ -3725,25 +4054,39 @@ class BillingStorage(context: Context) {
 
     fun loadInvoiceHistory(): List<InvoiceRecord> {
         val raw = prefs.getString(invoiceHistoryKey, "[]") ?: "[]"
-        val arr = JSONArray(raw)
+        val arr = try {
+            JSONArray(raw)
+        } catch (_: Exception) {
+            return emptyList()
+        }
         return buildList {
             for (i in 0 until arr.length()) {
-                val obj = arr.getJSONObject(i)
-                add(
-                    InvoiceRecord(
-                        invoiceNumber = obj.getString("invoiceNumber"),
-                        invoiceDate = obj.getString("invoiceDate"),
-                        customerName = obj.getString("customerName"),
-                        customerPhone = obj.optString("customerPhone", ""),
-                        items = parseItems(obj.optJSONArray("items")),
-                        shippingCharges = obj.optDouble("shippingCharges", 0.0),
-                        total = obj.getDouble("total"),
-                        filePath = obj.getString("filePath"),
-                        createdAtMillis = obj.optLong("createdAtMillis", parseDateToMillis(obj.getString("invoiceDate"))),
-                        paymentReceived = obj.optBoolean("paymentReceived", false),
-                        invoiceType = normalizeInvoiceType(obj.optString("invoiceType", "B2C"))
+                val obj = arr.optJSONObject(i) ?: continue
+                val invoiceNumber = obj.optString("invoiceNumber", "").trim()
+                if (invoiceNumber.isEmpty()) continue
+                val invoiceDate = obj.optString("invoiceDate", "")
+                try {
+                    add(
+                        InvoiceRecord(
+                            invoiceNumber = invoiceNumber,
+                            invoiceDate = invoiceDate,
+                            customerName = obj.optString("customerName", ""),
+                            customerPhone = obj.optString("customerPhone", ""),
+                            items = parseItems(obj.optJSONArray("items")),
+                            shippingCharges = obj.optDouble("shippingCharges", 0.0),
+                            total = obj.optDouble("total", 0.0),
+                            filePath = obj.optString("filePath", ""),
+                            createdAtMillis = obj.optLong(
+                                "createdAtMillis",
+                                parseDateToMillis(invoiceDate)
+                            ),
+                            paymentReceived = obj.optBoolean("paymentReceived", false),
+                            invoiceType = normalizeInvoiceType(obj.optString("invoiceType", "B2C"))
+                        )
                     )
-                )
+                } catch (_: Exception) {
+                    // Skip a single corrupt row; keeps the rest of history loadable after upgrade.
+                }
             }
         }
     }

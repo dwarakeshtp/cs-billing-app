@@ -12,6 +12,7 @@ class AutoBackupReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         EXECUTOR.execute {
             try {
+                Log.d(TAG, "Alarm fired, starting automatic backup")
                 val app = context.applicationContext
                 val storage = BillingStorage(app)
                 if (!storage.isAutoBackupEnabled()) {

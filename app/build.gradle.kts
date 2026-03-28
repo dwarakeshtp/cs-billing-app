@@ -1,6 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+val billingVersionProperties = Properties().apply {
+    val vf = rootProject.file("version.properties")
+    if (!vf.exists()) {
+        throw GradleException("Missing root version.properties (see README.md#versioning--changelog).")
+    }
+    vf.inputStream().use { load(it) }
 }
 
 android {
@@ -11,8 +21,8 @@ android {
         applicationId = "com.crumbsandsoul.billing"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = billingVersionProperties.getProperty("versionCode").toInt()
+        versionName = billingVersionProperties.getProperty("versionName")
     }
 
     buildTypes {

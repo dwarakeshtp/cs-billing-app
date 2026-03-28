@@ -14,6 +14,8 @@ import java.time.ZonedDateTime
 object AutoBackupScheduler {
     private const val TAG = "AutoBackup"
     private const val RC_AUTO_BACKUP = 91001
+    /** PendingIntent for [AlarmManager.AlarmClockInfo] “show alarm” UI — must not reuse the backup broadcast PI. */
+    private const val RC_ALARM_CLOCK_SHOW = 91002
 
     fun autoBackupZipFile(context: Context): File =
         File(context.filesDir, "CrumbsAndSoul_auto_full_backup.zip")
@@ -90,6 +92,18 @@ object AutoBackupScheduler {
         )
     }
 
+    private fun alarmClockShowPendingIntent(context: Context): PendingIntent {
+        val open = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        return PendingIntent.getActivity(
+            context,
+            RC_ALARM_CLOCK_SHOW,
+            open,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
     /**
      * Restore or create the alarm (app start, boot, or after changing settings).
      */
@@ -138,8 +152,9 @@ object AutoBackupScheduler {
         val pi = pendingIntent(context)
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val showPi = alarmClockShowPendingIntent(context)
                 am.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(triggerAtMillis, pi),
+                    AlarmManager.AlarmClockInfo(triggerAtMillis, showPi),
                     pi
                 )
             } else {

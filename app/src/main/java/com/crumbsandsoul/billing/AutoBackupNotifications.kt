@@ -7,11 +7,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 
 object AutoBackupNotifications {
+    private const val TAG = "AutoBackup"
     const val CHANNEL_ID = "auto_backup"
     private const val NOTIF_ID_SUCCESS = 92001
     private const val NOTIF_ID_FAILURE = 92002
@@ -46,7 +48,10 @@ object AutoBackupNotifications {
     fun notifySuccess(context: Context, zipFile: java.io.File) {
         val app = context.applicationContext
         ensureChannel(app)
-        if (!canShowNotifications(app)) return
+        if (!canShowNotifications(app)) {
+            Log.w(TAG, "Skipping success notification: notifications disabled or POST_NOTIFICATIONS not granted")
+            return
+        }
         val size = zipFile.length()
         val detail = buildString {
             append(zipFile.name)
@@ -85,7 +90,10 @@ object AutoBackupNotifications {
     fun notifyFailure(context: Context, reason: String?) {
         val app = context.applicationContext
         ensureChannel(app)
-        if (!canShowNotifications(app)) return
+        if (!canShowNotifications(app)) {
+            Log.w(TAG, "Skipping failure notification: notifications disabled or POST_NOTIFICATIONS not granted")
+            return
+        }
         val text = reason?.trim()?.takeIf { it.isNotBlank() }
             ?: "Could not create the automatic backup file. Check free storage and try a manual export."
         val openIntent = Intent(app, MainActivity::class.java).apply {
