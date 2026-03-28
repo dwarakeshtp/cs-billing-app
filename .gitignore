@@ -1,0 +1,47 @@
+# Gradle / Android outputs (already tracked files: run `git rm -r --cached app/build`)
+.gradle/
+build/
+app/build/
+**/build/
+
+# Android / Kotlin
+*.apk
+*.aab
+*.ap_
+*.dex
+local.properties
+.externalNativeBuild/
+.cxx/
+*.hprof
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Captures / profiling
+captures/
+
+# Temp & cache
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.tmp/
+tmp/
+temp/
+.cache/
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kotlin (daemon occasionally writes here)
+.kotlin/
