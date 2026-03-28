@@ -1,7 +1,5 @@
-# Gradle / Android outputs (already tracked files: run `git rm -r --cached app/build`)
+# Gradle / Android — any module’s `build/` dir (including app/build/tmp). If Git still tracks them: git rm -r --cached app/build
 .gradle/
-build/
-app/build/
 **/build/
 
 # Android / Kotlin

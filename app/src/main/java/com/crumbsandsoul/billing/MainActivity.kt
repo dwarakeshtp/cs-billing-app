@@ -22,6 +22,9 @@ import android.os.Environment
 import android.text.format.DateFormat
 import android.provider.ContactsContract
 import android.widget.Toast
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -153,9 +156,9 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
+import java.util.Locale
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -379,7 +382,7 @@ fun BillingApp() {
                     ih.add(0, record)
                 }
                 storage.saveInvoiceHistory(ih.toList())
-                shareOnWhatsApp(context, file, invoice.customerPhone)
+                shareInvoicePdfAndPaymentQrOnWhatsApp(context, file, invoice, invoice.customerPhone)
                 file
             } else {
                 scope.launch { snackbarHostState.showSnackbar("Failed to generate invoice PDF") }
@@ -1442,6 +1445,18 @@ private fun copyPlainTextToClipboard(context: Context, clipLabel: String, text: 
     Toast.makeText(context, toastMessage, Toast.LENGTH_SHORT).show()
 }
 
+/** WhatsApp often drops file attachments if [Intent.EXTRA_TEXT] is set — grant per-URI read as well. */
+private fun grantReadToWhatsAppPackages(context: Context, uris: Collection<Uri>) {
+    for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b")) {
+        for (uri in uris) {
+            try {
+                context.grantUriPermission(pkg, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) {
+            }
+        }
+    }
+}
+
 @Composable
 fun CustomerScreen(
     customers: List<Customer>,
@@ -1565,6 +1580,26 @@ fun CustomerScreen(
                     )
                 }
                 Row {
+                    IconButton(
+                        onClick = {
+                            if (normalizeWhatsAppPhone(customer.phone) == null) {
+                                Toast.makeText(
+                                    context,
+                                    "Add a valid 10-digit phone number to share the catalog",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                sendMenuCatalogWhatsApp(context, customer.phone, customer.name)
+                            }
+                        },
+                        modifier = Modifier.size(48.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Share,
+                            contentDescription = "Share menu catalog on WhatsApp",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                     IconButton(
                         onClick = {
                             editingCustomer = customer
@@ -1966,6 +2001,7 @@ fun InvoiceHistoryScreen(
     var pendingDelete by remember { mutableStateOf<InvoiceRecord?>(null) }
     var pendingPaymentReminder by remember { mutableStateOf<InvoiceRecord?>(null) }
     var pendingPaymentChange by remember { mutableStateOf<Pair<InvoiceRecord, Boolean>?>(null) }
+    var shareMenuExpandedFor by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(dateFilter, records.size) {
         val required = requiredLoadDepthForDateFilter(dateFilter)
         if (loadDepthCovers(loadedDepth, required)) return@LaunchedEffect
@@ -2260,19 +2296,87 @@ fun InvoiceHistoryScreen(
                         }, modifier = Modifier.size(48.dp)) {
                             Icon(Icons.Default.Visibility, contentDescription = "View invoice")
                         }
-                        IconButton(onClick = {
-                            val file = File(record.filePath)
-                            if (file.exists()) {
-                                if (record.customerPhone.isNotBlank()) {
-                                    shareOnWhatsApp(context, file, record.customerPhone)
-                                } else {
-                                    Toast.makeText(context, "Customer phone missing for WhatsApp share", Toast.LENGTH_SHORT).show()
-                                }
-                            } else {
-                                Toast.makeText(context, "PDF not found on device", Toast.LENGTH_SHORT).show()
+                        Box {
+                            IconButton(
+                                onClick = {
+                                    shareMenuExpandedFor =
+                                        if (shareMenuExpandedFor == record.invoiceNumber) null else record.invoiceNumber
+                                },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(Icons.Default.Share, contentDescription = "Share")
                             }
-                        }, modifier = Modifier.size(48.dp)) {
-                            Icon(Icons.Default.Share, contentDescription = "Share invoice via WhatsApp")
+                            DropdownMenu(
+                                expanded = shareMenuExpandedFor == record.invoiceNumber,
+                                onDismissRequest = { shareMenuExpandedFor = null }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Share invoice") },
+                                    onClick = {
+                                        shareMenuExpandedFor = null
+                                        val file = File(record.filePath)
+                                        if (file.exists()) {
+                                            if (record.customerPhone.isNotBlank()) {
+                                                shareOnWhatsApp(context, file, record.customerPhone)
+                                            } else {
+                                                Toast.makeText(
+                                                    context,
+                                                    "Customer phone missing for WhatsApp share",
+                                                    Toast.LENGTH_SHORT
+                                                ).show()
+                                            }
+                                        } else {
+                                            Toast.makeText(context, "PDF not found on device", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Share payment QR") },
+                                    onClick = {
+                                        shareMenuExpandedFor = null
+                                        if (record.customerPhone.isBlank()) {
+                                            Toast.makeText(
+                                                context,
+                                                "Customer phone missing for WhatsApp",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else if (normalizeWhatsAppPhone(record.customerPhone) == null) {
+                                            Toast.makeText(
+                                                context,
+                                                "Invalid phone number for WhatsApp",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else {
+                                            sharePaymentQrOnlyOnWhatsApp(
+                                                context,
+                                                invoiceDataFromRecord(record),
+                                                record.customerPhone
+                                            )
+                                        }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Google review") },
+                                    onClick = {
+                                        shareMenuExpandedFor = null
+                                        if (record.customerPhone.isBlank()) {
+                                            Toast.makeText(
+                                                context,
+                                                "Add customer phone on this invoice to message on WhatsApp",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else if (normalizeWhatsAppPhone(record.customerPhone) == null) {
+                                            Toast.makeText(
+                                                context,
+                                                "Invalid phone number for WhatsApp",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        } else {
+                                            sendGoogleReviewWhatsApp(context, record.customerPhone)
+                                        }
+                                    }
+                                )
+                            }
                         }
                         if (!record.paymentReceived) {
                             IconButton(
@@ -4206,19 +4310,25 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
     }
 }
 
-/** Word-wrap for PDF drawing; keeps glyphs within [maxWidth] for the given [paint]. */
+/** Word-wrap for PDF drawing; keeps glyphs within [maxWidth] for the given [paint]. Respects explicit newlines. */
 private fun pdfWrapText(text: String, paint: Paint, maxWidth: Float): List<String> {
     val trimmed = text.trim()
     if (trimmed.isEmpty()) return listOf("")
     val lines = mutableListOf<String>()
-    var remaining = trimmed
     val w = maxWidth.coerceAtLeast(24f)
-    while (remaining.isNotEmpty()) {
-        var count = paint.breakText(remaining, true, w, null)
-        if (count <= 0) count = 1
-        val chunk = remaining.substring(0, count).trimEnd()
-        lines.add(if (chunk.isEmpty()) remaining.substring(0, 1) else chunk)
-        remaining = remaining.substring(count).trimStart()
+    for (paragraph in trimmed.split("\n")) {
+        var remaining = paragraph.trim()
+        if (remaining.isEmpty()) {
+            lines.add("")
+            continue
+        }
+        while (remaining.isNotEmpty()) {
+            var count = paint.breakText(remaining, true, w, null)
+            if (count <= 0) count = 1
+            val chunk = remaining.substring(0, count).trimEnd()
+            lines.add(if (chunk.isEmpty()) remaining.substring(0, 1) else chunk)
+            remaining = remaining.substring(count).trimStart()
+        }
     }
     return lines
 }
@@ -4271,6 +4381,56 @@ private fun drawPdfWrappedLeft(
 }
 
 /** Makes near-black pixels transparent so [R.drawable.brand_logo] matches any surface (UI + PDF). */
+/** Google review link drafted when sharing from invoice history. */
+private const val GOOGLE_REVIEW_SHARE_URL = "https://share.google/OwlE8TZHlEbSKdsWc"
+
+/** WhatsApp Business catalog / menu link shared from customer list. */
+private const val WHATSAPP_MENU_CATALOG_URL = "https://wa.me/c/919019508365"
+
+/** UPI ID printed on invoices and encoded in the payment QR. */
+private const val INVOICE_UPI_VPA = "hanjanalakshmi@okaxis"
+private const val INVOICE_UPI_PAYEE_NAME = "Crumbs & Soul"
+
+/** Matches invoice PDF body fill — QR “light” modules blend with the page. */
+private val invoiceQrLightBackgroundColor: Int = Color.parseColor("#F7F4EA")
+
+/** UPI intent string for QR (BHIM / GPay / PhonePe / Paytm). */
+private fun buildUpiDeepLink(vpa: String, payeeName: String, amountRupees: Double): String {
+    return Uri.parse("upi://pay").buildUpon()
+        .appendQueryParameter("pa", vpa)
+        .appendQueryParameter("pn", payeeName)
+        .appendQueryParameter("am", String.format(Locale.US, "%.2f", amountRupees))
+        .appendQueryParameter("cu", "INR")
+        .build()
+        .toString()
+}
+
+private fun createQrCodeBitmap(
+    data: String,
+    sizePx: Int,
+    lightColor: Int = Color.WHITE,
+    darkColor: Int = Color.BLACK
+): Bitmap? {
+    return try {
+        val hints = mapOf(
+            EncodeHintType.MARGIN to 1,
+            EncodeHintType.CHARACTER_SET to "UTF-8"
+        )
+        val matrix = QRCodeWriter().encode(data, BarcodeFormat.QR_CODE, sizePx, sizePx, hints)
+        val w = matrix.width
+        val h = matrix.height
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        for (x in 0 until w) {
+            for (y in 0 until h) {
+                bmp.setPixel(x, y, if (matrix.get(x, y)) darkColor else lightColor)
+            }
+        }
+        bmp
+    } catch (_: Exception) {
+        null
+    }
+}
+
 private fun removeBlackBackgroundFromLogo(source: Bitmap): Bitmap {
     val out = source.copy(Bitmap.Config.ARGB_8888, true)
     val width = out.width
@@ -4744,15 +4904,27 @@ object InvoicePdfGenerator {
             val totalAmtBaseline = pdfCenteredSingleLineBaseline(totTop, totBot, strongRightPaint.fontMetrics)
             canvas.drawText("₹${money(invoice.total)}", amountRightX, totalAmtBaseline, strongRightPaint)
             val totalBoxBottom = totBot
-            val footerRuleY = totalBoxBottom + 40f
+            var footerRuleY = totalBoxBottom + 40f
             canvas.drawLine(contentLeft, footerRuleY, contentRight, footerRuleY, mutedLinePaint)
 
-            val upiVpa = "hanajanalakshmi@okaxis"
+            val upiVpa = INVOICE_UPI_VPA
             val upiFooterPaint = Paint(strongPaint).apply {
                 textSize = 26f
                 color = themePrimary
             }
             val footerTextW = (contentRight - contentLeft - 12f).coerceAtLeast(120f)
+            val qrSizePts = 180f
+            val footerBlockMinH = 38f + 220f + qrSizePts + 80f
+            if (footerRuleY + footerBlockMinH > 1680f) {
+                document.finishPage(page)
+                pageNumber += 1
+                page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
+                canvas = page.canvas
+                canvas.drawRect(0f, 0f, 1240f, 1754f, bodyPanelFillPaint)
+                footerRuleY = 80f
+                canvas.drawLine(contentLeft, footerRuleY, contentRight, footerRuleY, mutedLinePaint)
+            }
+
             var footerY = footerRuleY + 38f
             footerY = drawPdfWrappedLeft(
                 canvas,
@@ -4763,15 +4935,49 @@ object InvoicePdfGenerator {
                 footerTextW
             )
             footerY += 20f
+
+            val upiDeepLink = buildUpiDeepLink(upiVpa, INVOICE_UPI_PAYEE_NAME, invoice.total)
+            val qrBitmapFull = createQrCodeBitmap(
+                upiDeepLink,
+                512,
+                lightColor = themeBackground
+            )
+            // Align QR right edge with item table (same inset as line items).
+            val qrLeft = tblRight - qrSizePts
+            val upiColumnMaxW = (qrLeft - 20f - contentLeft).coerceAtLeast(100f)
+            val upiBlockTop = footerY
+            val upiTextEndY = drawPdfWrappedLeft(
+                canvas,
+                "Pay via UPI — $upiVpa\n" +
+                    "Amount: ₹${money(invoice.total)}",
+                upiFooterPaint,
+                contentLeft,
+                footerY,
+                upiColumnMaxW
+            )
+            if (qrBitmapFull != null) {
+                val scaled = Bitmap.createScaledBitmap(qrBitmapFull, qrSizePts.toInt(), qrSizePts.toInt(), true)
+                if (scaled !== qrBitmapFull) qrBitmapFull.recycle()
+                val dst = Rect(
+                    qrLeft.toInt(),
+                    upiBlockTop.toInt(),
+                    (qrLeft + qrSizePts).toInt(),
+                    (upiBlockTop + qrSizePts).toInt()
+                )
+                canvas.drawBitmap(scaled, null, dst, null)
+                scaled.recycle()
+            }
+            footerY = maxOf(upiTextEndY, upiBlockTop + qrSizePts) + 16f
+            val scanHintPaint = Paint(smallPaint).apply { textSize = 20f }
             footerY = drawPdfWrappedLeft(
                 canvas,
-                "Pay via UPI — $upiVpa",
-                upiFooterPaint,
+                "Scan the QR with any UPI app to pay the amount above.",
+                scanHintPaint,
                 contentLeft,
                 footerY,
                 footerTextW
             )
-            footerY += 16f
+            footerY += 8f
             drawPdfWrappedLeft(
                 canvas,
                 "This is a computer generated invoice. No signature required.",
@@ -5177,6 +5383,88 @@ fun createSalesReportExcel(
     }
 }
 
+fun sendGoogleReviewWhatsApp(context: Context, customerPhone: String) {
+    val normalized = normalizeWhatsAppPhone(customerPhone)
+    if (normalized == null) {
+        Toast.makeText(context, "Invalid phone number for WhatsApp", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val message = buildString {
+        appendLine("Hi! Thank you for choosing Crumbs & Soul.")
+        appendLine()
+        appendLine(GOOGLE_REVIEW_SHARE_URL)
+        appendLine()
+        appendLine(
+            "Kindly share your valuable feedback and rating in the above link with specific about what you " +
+                "really like about our services and also your favourite snacks ! This small step from you " +
+                "would help us grow  bigger ! ✨🌿"
+        )
+        appendLine()
+        appendLine("Cheers ✨")
+    }
+    val encoded = Uri.encode(message)
+    val url = "https://wa.me/$normalized?text=$encoded"
+    val uri = Uri.parse(url)
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp" }
+        )
+    } catch (_: Exception) {
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp.w4b" }
+            )
+        } catch (_: Exception) {
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            } catch (_: Exception) {
+                Toast.makeText(context, "Could not open WhatsApp", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
+/**
+ * Opens WhatsApp to [customerPhone] with a drafted message sharing the menu catalog link
+ * ([WHATSAPP_MENU_CATALOG_URL]).
+ */
+fun sendMenuCatalogWhatsApp(context: Context, customerPhone: String, customerDisplayName: String) {
+    val normalized = normalizeWhatsAppPhone(customerPhone)
+    if (normalized == null) {
+        Toast.makeText(context, "Invalid phone number for WhatsApp", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val greetingName = customerDisplayName.trim().ifBlank { "there" }
+    val message = buildString {
+        appendLine("Hi $greetingName!")
+        appendLine()
+        appendLine("Here's our menu catalog on WhatsApp — browse and order anytime:")
+        appendLine(WHATSAPP_MENU_CATALOG_URL)
+        appendLine()
+        appendLine("— Crumbs & Soul")
+    }
+    val encoded = Uri.encode(message)
+    val url = "https://wa.me/$normalized?text=$encoded"
+    val uri = Uri.parse(url)
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp" }
+        )
+    } catch (_: Exception) {
+        try {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, uri).apply { `package` = "com.whatsapp.w4b" }
+            )
+        } catch (_: Exception) {
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+            } catch (_: Exception) {
+                Toast.makeText(context, "Could not open WhatsApp", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
 fun sendPaymentReminderWhatsApp(
     context: Context,
     customerPhone: String,
@@ -5218,6 +5506,186 @@ fun sendPaymentReminderWhatsApp(
                 context.startActivity(Intent(Intent.ACTION_VIEW, uri))
             } catch (_: Exception) {
                 Toast.makeText(context, "Could not open WhatsApp", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+}
+
+/**
+ * Drafted message for WhatsApp when sharing the invoice PDF from the Generate screen (PDF includes UPI QR).
+ */
+private fun buildInvoiceWhatsAppShareMessage(invoice: InvoiceData): String {
+    val name = invoice.customerName.trim().ifBlank { "there" }
+    val invType = normalizeInvoiceType(invoice.invoiceType)
+    return buildString {
+        appendLine("Hi $name,")
+        appendLine()
+        appendLine("Please find your invoice (PDF) and UPI payment QR below. Amount is prefilled when you scan the QR.")
+        appendLine()
+        appendLine("Invoice No: ${invoice.invoiceNumber}")
+        appendLine("Date: ${invoice.invoiceDate}")
+        appendLine("Type: $invType")
+        appendLine("Total: ₹${money(invoice.total)}")
+        appendLine()
+        appendLine("UPI ID: $INVOICE_UPI_VPA")
+        appendLine()
+        appendLine("— Crumbs & Soul")
+    }
+}
+
+/**
+ * Shares the invoice PDF to the customer on WhatsApp with a drafted message.
+ * (The PDF already includes a UPI QR; a separate PNG is not attached because WhatsApp often drops the PDF
+ * when using [Intent.ACTION_SEND_MULTIPLE] with mixed types.)
+ */
+fun shareInvoicePdfAndPaymentQrOnWhatsApp(
+    context: Context,
+    pdfFile: File,
+    invoice: InvoiceData,
+    customerPhone: String
+) {
+    val normalized = normalizeWhatsAppPhone(customerPhone)
+    if (normalized == null) {
+        Toast.makeText(context, "Invalid customer phone for WhatsApp", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val jid = "$normalized@s.whatsapp.net"
+    val message = buildInvoiceWhatsAppShareMessage(invoice)
+    val pdfUri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        pdfFile
+    )
+    launchWhatsAppPdfOnly(context, pdfUri, jid, message)
+}
+
+/** Opens WhatsApp to send a single invoice PDF; [caption] is prefilled as the chat message when non-null. */
+private fun launchWhatsAppPdfOnly(context: Context, pdfUri: Uri, jid: String, caption: String? = null) {
+    fun buildSendIntent(targetPackage: String?): Intent =
+        Intent(Intent.ACTION_SEND).apply {
+            type = "application/pdf"
+            putExtra(Intent.EXTRA_STREAM, pdfUri)
+            clipData = ClipData.newUri(context.contentResolver, "application/pdf", pdfUri)
+            if (caption != null) putExtra(Intent.EXTRA_TEXT, caption)
+            putExtra("jid", jid)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            if (targetPackage != null) `package` = targetPackage
+        }
+
+    grantReadToWhatsAppPackages(context, listOf(pdfUri))
+    try {
+        context.startActivity(buildSendIntent("com.whatsapp"))
+    } catch (_: Exception) {
+        try {
+            context.startActivity(buildSendIntent("com.whatsapp.w4b"))
+        } catch (_: Exception) {
+            Toast.makeText(context, "WhatsApp not found. Opening share sheet.", Toast.LENGTH_SHORT).show()
+            val fallback = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, pdfUri)
+                clipData = ClipData.newUri(context.contentResolver, "application/pdf", pdfUri)
+                if (caption != null) putExtra(Intent.EXTRA_TEXT, caption)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            context.startActivity(Intent.createChooser(fallback, "Share invoice"))
+        }
+    }
+}
+
+private fun invoiceDataFromRecord(record: InvoiceRecord): InvoiceData =
+    InvoiceData(
+        invoiceNumber = record.invoiceNumber,
+        invoiceDate = record.invoiceDate,
+        customerName = record.customerName,
+        customerPhone = record.customerPhone,
+        items = record.items,
+        shippingCharges = record.shippingCharges,
+        total = record.total,
+        invoiceType = record.invoiceType
+    )
+
+/** Message when sharing only the payment QR (e.g. from invoice history). */
+private fun buildPaymentQrOnlyShareMessage(invoice: InvoiceData): String {
+    val name = invoice.customerName.trim().ifBlank { "there" }
+    val invType = normalizeInvoiceType(invoice.invoiceType)
+    return buildString {
+        appendLine("Hi $name,")
+        appendLine()
+        appendLine("Here is your UPI payment QR for this invoice. Scan to pay the amount (prefilled).")
+        appendLine()
+        appendLine("Invoice No: ${invoice.invoiceNumber}")
+        appendLine("Date: ${invoice.invoiceDate}")
+        appendLine("Type: $invType")
+        appendLine("Total: ₹${money(invoice.total)}")
+        appendLine()
+        appendLine("UPI ID: $INVOICE_UPI_VPA")
+        appendLine()
+        appendLine("— Crumbs & Soul")
+    }
+}
+
+/**
+ * Shares only the UPI payment QR image (PNG) for [invoice] with a drafted WhatsApp message.
+ */
+fun sharePaymentQrOnlyOnWhatsApp(context: Context, invoice: InvoiceData, customerPhone: String) {
+    val normalized = normalizeWhatsAppPhone(customerPhone)
+    if (normalized == null) {
+        Toast.makeText(context, "Invalid phone number for WhatsApp", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val jid = "$normalized@s.whatsapp.net"
+    val upiLink = buildUpiDeepLink(INVOICE_UPI_VPA, INVOICE_UPI_PAYEE_NAME, invoice.total)
+    val qrBitmap = createQrCodeBitmap(upiLink, 640, lightColor = invoiceQrLightBackgroundColor)
+    val folder = File(
+        context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
+        "CrumbsAndSoulInvoices"
+    ).apply { mkdirs() }
+    val qrFile = File(folder, "Invoice_${invoice.invoiceNumber}_pay_qr.png")
+    var wroteQrFile = false
+    if (qrBitmap != null) {
+        try {
+            FileOutputStream(qrFile).use { out ->
+                wroteQrFile = qrBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+        } finally {
+            if (!qrBitmap.isRecycled) qrBitmap.recycle()
+        }
+    }
+    if (!wroteQrFile || !qrFile.isFile || qrFile.length() == 0L) {
+        Toast.makeText(context, "Could not create payment QR", Toast.LENGTH_SHORT).show()
+        return
+    }
+    val qrUri = FileProvider.getUriForFile(
+        context,
+        "${context.packageName}.fileprovider",
+        qrFile
+    )
+    val message = buildPaymentQrOnlyShareMessage(invoice)
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "image/png"
+        putExtra(Intent.EXTRA_STREAM, qrUri)
+        putExtra(Intent.EXTRA_TEXT, message)
+        putExtra("jid", jid)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        `package` = "com.whatsapp"
+    }
+    try {
+        context.startActivity(intent)
+    } catch (_: Exception) {
+        try {
+            context.startActivity(intent.apply { `package` = "com.whatsapp.w4b" })
+        } catch (_: Exception) {
+            Toast.makeText(context, "WhatsApp not found. Opening share sheet.", Toast.LENGTH_SHORT).show()
+            try {
+                val fallback = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, qrUri)
+                    putExtra(Intent.EXTRA_TEXT, message)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(fallback, "Share payment QR"))
+            } catch (_: Exception) {
+                Toast.makeText(context, "Could not share payment QR", Toast.LENGTH_SHORT).show()
             }
         }
     }
