@@ -79,7 +79,9 @@ import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
@@ -206,6 +208,7 @@ class InvoiceDraftState(initialInvoiceNumber: String) {
     var invoiceDate by mutableStateOf("")
     var editingInvoiceNumber by mutableStateOf<String?>(null)
     var shippingChargesInput by mutableStateOf("")
+    var notes by mutableStateOf("")
     var invoiceType by mutableStateOf("B2C")
     val lineItems = mutableStateListOf<InvoiceLineItem>()
 }
@@ -221,7 +224,10 @@ data class InvoiceRecord(
     val filePath: String,
     val createdAtMillis: Long,
     val paymentReceived: Boolean,
-    val invoiceType: String = "B2C"
+    val invoiceType: String = "B2C",
+    val notes: String = "",
+    /** When true, PDF shows CANCELLED watermark; invoice number is retained. */
+    val cancelled: Boolean = false
 )
 
 enum class AppSection(val title: String) {
@@ -341,7 +347,13 @@ fun BillingApp() {
 
     val onSaveInvoicePdf = remember(context, storage, scope, snackbarHostState) {
         { invoice: InvoiceData, isUpdate: Boolean ->
-            val file = InvoicePdfGenerator.createInvoicePdf(context, invoice)
+            val ih0 = invoiceHistoryRef.value
+            val existingForStamp = ih0.firstOrNull { it.invoiceNumber == invoice.invoiceNumber }
+            val file = InvoicePdfGenerator.createInvoicePdf(
+                context,
+                invoice,
+                stampCancelled = existingForStamp?.cancelled == true
+            )
             if (file != null) {
                 val ih = invoiceHistoryRef.value
                 val existingIndex = ih.indexOfFirst { it.invoiceNumber == invoice.invoiceNumber }
@@ -357,7 +369,9 @@ fun BillingApp() {
                     filePath = file.absolutePath,
                     createdAtMillis = existing?.createdAtMillis ?: System.currentTimeMillis(),
                     paymentReceived = existing?.paymentReceived ?: false,
-                    invoiceType = normalizeInvoiceType(invoice.invoiceType)
+                    invoiceType = normalizeInvoiceType(invoice.invoiceType),
+                    notes = invoice.notes.trim(),
+                    cancelled = existing?.cancelled ?: false
                 )
                 if (isUpdate && existingIndex >= 0) {
                     ih[existingIndex] = record
@@ -385,7 +399,13 @@ fun BillingApp() {
 
     val onShareInvoiceWhatsapp = remember(context, storage, scope) {
         { invoice: InvoiceData, isUpdate: Boolean ->
-            val file = InvoicePdfGenerator.createInvoicePdf(context, invoice)
+            val ih0 = invoiceHistoryRef.value
+            val existingForStamp = ih0.firstOrNull { it.invoiceNumber == invoice.invoiceNumber }
+            val file = InvoicePdfGenerator.createInvoicePdf(
+                context,
+                invoice,
+                stampCancelled = existingForStamp?.cancelled == true
+            )
             if (file != null) {
                 val ih = invoiceHistoryRef.value
                 val existingIndex = ih.indexOfFirst { it.invoiceNumber == invoice.invoiceNumber }
@@ -401,7 +421,9 @@ fun BillingApp() {
                     filePath = file.absolutePath,
                     createdAtMillis = existing?.createdAtMillis ?: System.currentTimeMillis(),
                     paymentReceived = existing?.paymentReceived ?: false,
-                    invoiceType = normalizeInvoiceType(invoice.invoiceType)
+                    invoiceType = normalizeInvoiceType(invoice.invoiceType),
+                    notes = invoice.notes.trim(),
+                    cancelled = existing?.cancelled ?: false
                 )
                 if (isUpdate && existingIndex >= 0) {
                     ih[existingIndex] = record
@@ -491,6 +513,7 @@ fun BillingApp() {
             invoiceDraft.invoiceDate = ""
             invoiceDraft.editingInvoiceNumber = null
             invoiceDraft.shippingChargesInput = ""
+            invoiceDraft.notes = ""
             invoiceDraft.invoiceType = "B2C"
             invoiceDraft.lineItems.clear()
             invoiceDraft.invoiceNumber = storage.previewInvoiceNumber()
@@ -722,11 +745,37 @@ fun BillingApp() {
                             storage.saveInvoiceHistory(invoiceHistory.toList())
                         }
                     },
-                    onDeleteInvoice = { record ->
-                        invoiceHistory.removeAll { it.invoiceNumber == record.invoiceNumber }
-                        storage.saveInvoiceHistory(invoiceHistory.toList())
-                        val file = File(record.filePath)
-                        if (file.exists()) file.delete()
+                    onCancelInvoice = { record ->
+                        val index = invoiceHistory.indexOfFirst { it.invoiceNumber == record.invoiceNumber }
+                        if (index >= 0) {
+                            val newFile = replaceInvoicePdfForRecord(context, record, stampCancelled = true)
+                            if (newFile == null) {
+                                Toast.makeText(
+                                    context,
+                                    "Could not regenerate cancelled invoice PDF",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                invoiceHistory[index] = record.copy(cancelled = true, filePath = newFile.absolutePath)
+                                storage.saveInvoiceHistory(invoiceHistory.toList())
+                            }
+                        }
+                    },
+                    onRestoreInvoice = { record ->
+                        val index = invoiceHistory.indexOfFirst { it.invoiceNumber == record.invoiceNumber }
+                        if (index >= 0) {
+                            val newFile = replaceInvoicePdfForRecord(context, record, stampCancelled = false)
+                            if (newFile == null) {
+                                Toast.makeText(
+                                    context,
+                                    "Could not regenerate active invoice PDF",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                invoiceHistory[index] = record.copy(cancelled = false, filePath = newFile.absolutePath)
+                                storage.saveInvoiceHistory(invoiceHistory.toList())
+                            }
+                        }
                     }
                 )
                 AppSection.SalesReports -> SalesReportScreen(
@@ -779,7 +828,8 @@ data class InvoiceData(
     val items: List<InvoiceLineItem>,
     val shippingCharges: Double,
     val total: Double,
-    val invoiceType: String = "B2C"
+    val invoiceType: String = "B2C",
+    val notes: String = ""
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -818,6 +868,7 @@ fun InvoiceScreen(
     var quantityInput by remember { mutableStateOf(draft.quantityInput) }
     var priceInput by remember { mutableStateOf(draft.priceInput) }
     var shippingChargesInput by remember { mutableStateOf(draft.shippingChargesInput) }
+    var notesInput by remember { mutableStateOf(draft.notes) }
     var invoiceNumber by remember { mutableStateOf(draft.invoiceNumber.ifBlank { previewInvoiceNumber() }) }
     var editIndex by remember { mutableStateOf(-1) }
     var editName by remember { mutableStateOf("") }
@@ -1134,6 +1185,19 @@ fun InvoiceScreen(
             imeAction = ImeAction.Done
         )
     )
+    OutlinedTextField(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        value = notesInput,
+        onValueChange = { notesInput = it },
+        label = { Text("Notes (optional)") },
+        placeholder = { Text("Shown on the invoice PDF") },
+        minLines = 3,
+        maxLines = 8,
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.Sentences,
+            imeAction = ImeAction.Default
+        )
+    )
     Text(
         text = "Subtotal: ₹${money(subTotal)}",
         fontSize = 14.sp,
@@ -1179,7 +1243,8 @@ fun InvoiceScreen(
                         items = lineItems.toList(),
                         shippingCharges = shippingCharges,
                         total = total,
-                        invoiceType = normalizeInvoiceType(draft.invoiceType)
+                        invoiceType = normalizeInvoiceType(draft.invoiceType),
+                        notes = notesInput
                     )
                     val isUpdate = draft.editingInvoiceNumber != null
                     lastGeneratedFile = onSavePdf(invoice, isUpdate)
@@ -1195,6 +1260,7 @@ fun InvoiceScreen(
                     quantityInput = "1"
                     priceInput = ""
                     shippingChargesInput = ""
+                    notesInput = ""
                     focusManager.clearFocus()
                     keyboardController?.hide()
                 }
@@ -1213,7 +1279,8 @@ fun InvoiceScreen(
                         items = lineItems.toList(),
                         shippingCharges = shippingCharges,
                         total = total,
-                        invoiceType = normalizeInvoiceType(draft.invoiceType)
+                        invoiceType = normalizeInvoiceType(draft.invoiceType),
+                        notes = notesInput
                     )
                     if (invoice.customerPhone.isBlank()) {
                         Toast.makeText(context, "Select customer with phone number to share on WhatsApp", Toast.LENGTH_SHORT).show()
@@ -1233,6 +1300,7 @@ fun InvoiceScreen(
                     quantityInput = "1"
                     priceInput = ""
                     shippingChargesInput = ""
+                    notesInput = ""
                     focusManager.clearFocus()
                     keyboardController?.hide()
                 }
@@ -1263,6 +1331,7 @@ fun InvoiceScreen(
     draft.quantityInput = quantityInput
     draft.priceInput = priceInput
     draft.shippingChargesInput = shippingChargesInput
+    draft.notes = notesInput
     draft.invoiceNumber = invoiceNumber
     draft.invoiceDate = invoiceDate
 
@@ -2296,7 +2365,8 @@ fun InvoiceHistoryScreen(
     products: List<Product>,
     onUpdateStatus: (String, Boolean) -> Unit,
     onEditInvoice: (InvoiceRecord) -> Unit,
-    onDeleteInvoice: (InvoiceRecord) -> Unit
+    onCancelInvoice: (InvoiceRecord) -> Unit,
+    onRestoreInvoice: (InvoiceRecord) -> Unit
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -2307,13 +2377,17 @@ fun InvoiceHistoryScreen(
         listOf("Last 7 Days", "Last 30 Days", "Last 90 Days", "All Time")
     }
     val paymentOptions = listOf("All", "Received", "Pending")
+    val statusFilterOptions = listOf("All", "Active", "Cancelled")
     var customerFilter by remember { mutableStateOf("All Customers") }
     var dateFilter by remember { mutableStateOf("Last 7 Days") }
     var paymentFilter by remember { mutableStateOf(paymentOptions.first()) }
+    var statusFilter by remember { mutableStateOf(statusFilterOptions.first()) }
     var customerExpanded by remember { mutableStateOf(false) }
     var dateExpanded by remember { mutableStateOf(false) }
     var paymentExpanded by remember { mutableStateOf(false) }
-    var pendingDelete by remember { mutableStateOf<InvoiceRecord?>(null) }
+    var statusExpanded by remember { mutableStateOf(false) }
+    var pendingCancel by remember { mutableStateOf<InvoiceRecord?>(null) }
+    var pendingRestore by remember { mutableStateOf<InvoiceRecord?>(null) }
     var pendingPaymentReminder by remember { mutableStateOf<InvoiceRecord?>(null) }
     var pendingPaymentChange by remember { mutableStateOf<Pair<InvoiceRecord, Boolean>?>(null) }
     var shareMenuExpandedFor by remember { mutableStateOf<String?>(null) }
@@ -2349,10 +2423,14 @@ fun InvoiceHistoryScreen(
     LaunchedEffect(dateRangeOptions, dateFilter) {
         if (dateFilter !in dateRangeOptions) dateFilter = "Last 7 Days"
     }
+    LaunchedEffect(statusFilterOptions, statusFilter) {
+        if (statusFilter !in statusFilterOptions) statusFilter = "All"
+    }
     var editingRecord by remember { mutableStateOf<InvoiceRecord?>(null) }
     var editName by remember { mutableStateOf("") }
     var editPhone by remember { mutableStateOf("") }
     var editShipping by remember { mutableStateOf("") }
+    var editNotes by remember { mutableStateOf("") }
     var editInvoiceType by remember { mutableStateOf("B2C") }
     val editItems = remember { mutableStateListOf<InvoiceLineItem>() }
     val editQtyInputs = remember { mutableStateMapOf<Int, String>() }
@@ -2390,7 +2468,8 @@ fun InvoiceHistoryScreen(
             items = sanitizedItems,
             shippingCharges = shipping,
             total = newTotal,
-            invoiceType = normalizeInvoiceType(editInvoiceType)
+            invoiceType = normalizeInvoiceType(editInvoiceType),
+            notes = editNotes.trim()
         )
         // Regenerate PDF file so updated invoice data is reflected.
         val newPdf = InvoicePdfGenerator.createInvoicePdf(
@@ -2403,8 +2482,10 @@ fun InvoiceHistoryScreen(
                 items = updated.items,
                 shippingCharges = updated.shippingCharges,
                 total = updated.total,
-                invoiceType = updated.invoiceType
-            )
+                invoiceType = updated.invoiceType,
+                notes = updated.notes
+            ),
+            stampCancelled = record.cancelled
         )
         if (newPdf == null) {
             Toast.makeText(context, "Failed to regenerate updated invoice PDF", Toast.LENGTH_SHORT).show()
@@ -2452,7 +2533,7 @@ fun InvoiceHistoryScreen(
         return true
     }
 
-    val filtered = remember(baseRecords, customerFilter, paymentFilter, dateFilter) {
+    val filtered = remember(baseRecords, customerFilter, paymentFilter, dateFilter, statusFilter) {
         baseRecords.filter { record ->
             val customerMatch =
                 customerFilter == "All Customers" || record.customerName.ifBlank { "Walk-in Customer" } == customerFilter
@@ -2468,7 +2549,12 @@ fun InvoiceHistoryScreen(
                 "All Time" -> true
                 else -> isWithinDays(record.createdAtMillis, 7)
             }
-            customerMatch && paymentMatch && dateMatch
+            val statusMatch = when (statusFilter) {
+                "Active" -> !record.cancelled
+                "Cancelled" -> record.cancelled
+                else -> true
+            }
+            customerMatch && paymentMatch && dateMatch && statusMatch
         }
     }
 
@@ -2495,6 +2581,14 @@ fun InvoiceHistoryScreen(
         expanded = paymentExpanded,
         onExpanded = { paymentExpanded = it },
         onSelect = { paymentFilter = it }
+    )
+    DropdownField(
+        label = "Invoice status",
+        value = statusFilter,
+        options = statusFilterOptions,
+        expanded = statusExpanded,
+        onExpanded = { statusExpanded = it },
+        onSelect = { statusFilter = it }
     )
 
     if (historyLoading) {
@@ -2527,24 +2621,48 @@ fun InvoiceHistoryScreen(
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Column(modifier = Modifier.padding(10.dp)) {
-                    val tileColor = if (record.paymentReceived) ComposeColor(0xFFE9F8EC) else ComposeColor(0xFFFFEBEB)
+                    val paymentEnabled = !record.cancelled
+                    val tileColor = when {
+                        !paymentEnabled -> ComposeColor(0xFFF0F0F0)
+                        record.paymentReceived -> ComposeColor(0xFFE9F8EC)
+                        else -> ComposeColor(0xFFFFEBEB)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(tileColor, RoundedCornerShape(10.dp))
-                            .clickable {
-                                pendingPaymentChange = record to !record.paymentReceived
-                            }
+                            .then(
+                                if (paymentEnabled) {
+                                    Modifier.clickable {
+                                        pendingPaymentChange = record to !record.paymentReceived
+                                    }
+                                } else {
+                                    Modifier
+                                }
+                            )
                             .padding(8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            if (record.paymentReceived) "Payment Received" else "Payment Pending",
-                            color = if (record.paymentReceived) ComposeColor(0xFF1E7E34) else ComposeColor(0xFFB00020),
+                            when {
+                                record.cancelled -> "Cancelled — payment status frozen"
+                                record.paymentReceived -> "Payment Received"
+                                else -> "Payment Pending"
+                            },
+                            color = when {
+                                record.cancelled -> ComposeColor(0xFF616161)
+                                record.paymentReceived -> ComposeColor(0xFF1E7E34)
+                                else -> ComposeColor(0xFFB00020)
+                            },
                             fontWeight = FontWeight.SemiBold
                         )
-                        IconButton(onClick = { pendingPaymentChange = record to !record.paymentReceived }) {
+                        IconButton(
+                            onClick = {
+                                if (paymentEnabled) pendingPaymentChange = record to !record.paymentReceived
+                            },
+                            enabled = paymentEnabled
+                        ) {
                             Icon(
                                 if (record.paymentReceived) Icons.Default.CheckCircle else Icons.Default.Schedule,
                                 contentDescription = "Toggle payment status"
@@ -2558,19 +2676,37 @@ fun InvoiceHistoryScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Invoice: ${record.invoiceNumber}", fontWeight = FontWeight.Bold)
-                        val typeLabel = normalizeInvoiceType(record.invoiceType)
-                        Text(
-                            typeLabel,
-                            modifier = Modifier
-                                .background(
-                                    if (typeLabel == "B2B") ComposeColor(0xFFE3F2FD) else ComposeColor(0xFFFFF3E0),
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = if (typeLabel == "B2B") ComposeColor(0xFF1565C0) else ComposeColor(0xFFE65100)
-                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val typeLabel = normalizeInvoiceType(record.invoiceType)
+                            Text(
+                                typeLabel,
+                                modifier = Modifier
+                                    .background(
+                                        if (typeLabel == "B2B") ComposeColor(0xFFE3F2FD) else ComposeColor(0xFFFFF3E0),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = if (typeLabel == "B2B") ComposeColor(0xFF1565C0) else ComposeColor(0xFFE65100)
+                            )
+                            val statusLabel = invoiceRecordStatusLabel(record.cancelled)
+                            Text(
+                                statusLabel,
+                                modifier = Modifier
+                                    .background(
+                                        if (record.cancelled) ComposeColor(0xFFFFEBEE) else ComposeColor(0xFFE8F5E9),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = if (record.cancelled) ComposeColor(0xFFC62828) else ComposeColor(0xFF2E7D32)
+                            )
+                        }
                     }
                     Text("Date: ${record.invoiceDate}")
                     Text("Customer: ${record.customerName}")
@@ -2586,6 +2722,7 @@ fun InvoiceHistoryScreen(
                                 editName = record.customerName
                                 editPhone = record.customerPhone
                                 editShipping = if (record.shippingCharges > 0.0) record.shippingCharges.roundToInt().toString() else ""
+                                editNotes = record.notes
                                 editItems.clear()
                                 editItems.addAll(record.items.map { InvoiceLineItem(it.productName, it.quantity, it.unitPrice) })
                                 editQtyInputs.clear()
@@ -2691,7 +2828,7 @@ fun InvoiceHistoryScreen(
                                 )
                             }
                         }
-                        if (!record.paymentReceived) {
+                        if (!record.paymentReceived && !record.cancelled) {
                             IconButton(
                                 onClick = {
                                     if (record.customerPhone.isBlank()) {
@@ -2718,12 +2855,22 @@ fun InvoiceHistoryScreen(
                                 )
                             }
                         }
-                        IconButton(onClick = { pendingDelete = record }, modifier = Modifier.size(48.dp)) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Delete invoice",
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
+                        if (!record.cancelled) {
+                            IconButton(onClick = { pendingCancel = record }, modifier = Modifier.size(48.dp)) {
+                                Icon(
+                                    Icons.Default.Block,
+                                    contentDescription = "Cancel invoice",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        } else {
+                            IconButton(onClick = { pendingRestore = record }, modifier = Modifier.size(48.dp)) {
+                                Icon(
+                                    Icons.Default.Refresh,
+                                    contentDescription = "Restore invoice to active",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
@@ -2788,19 +2935,47 @@ fun InvoiceHistoryScreen(
         )
     }
 
-    if (pendingDelete != null) {
+    if (pendingCancel != null) {
+        val c = pendingCancel!!
         AlertDialog(
-            onDismissRequest = { pendingDelete = null },
-            title = { Text("Delete Invoice") },
-            text = { Text("Are you sure you want to delete invoice ${pendingDelete!!.invoiceNumber}? This cannot be undone.") },
+            onDismissRequest = { pendingCancel = null },
+            title = { Text("Cancel invoice?") },
+            text = {
+                Text(
+                    "Invoice ${c.invoiceNumber} will stay in history with the same number. " +
+                        "A new PDF will be generated with CANCELLED marked on it. Summary sales totals exclude cancelled invoices."
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
-                    onDeleteInvoice(pendingDelete!!)
-                    pendingDelete = null
-                }) { Text("Delete") }
+                    onCancelInvoice(c)
+                    pendingCancel = null
+                }) { Text("Cancel invoice") }
             },
             dismissButton = {
-                TextButton(onClick = { pendingDelete = null }) { Text("Cancel") }
+                TextButton(onClick = { pendingCancel = null }) { Text("Back") }
+            }
+        )
+    }
+
+    if (pendingRestore != null) {
+        val r = pendingRestore!!
+        AlertDialog(
+            onDismissRequest = { pendingRestore = null },
+            title = { Text("Restore invoice?") },
+            text = {
+                Text(
+                    "Invoice ${r.invoiceNumber} will be marked Active again and the PDF will be regenerated without the cancelled stamp."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onRestoreInvoice(r)
+                    pendingRestore = null
+                }) { Text("Restore") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestore = null }) { Text("Back") }
             }
         )
     }
@@ -2862,6 +3037,14 @@ fun InvoiceHistoryScreen(
                         onValueChange = { editShipping = it.filter { ch -> ch.isDigit() } },
                         label = { Text("Shipping Charges") },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    OutlinedTextField(
+                        value = editNotes,
+                        onValueChange = { editNotes = it },
+                        label = { Text("Notes (optional)") },
+                        minLines = 2,
+                        maxLines = 6,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)
                     )
                     Text("Invoice type", fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -3047,12 +3230,14 @@ data class ReportDetailRow(
     val lineTotal: Double,
     val shippingCharges: Double,
     val invoiceTotal: Double,
-    val paymentStatus: String
+    val paymentStatus: String,
+    val invoiceStatus: String
 )
 
 data class ReportInvoicePdfRow(
     val invoiceNumber: String,
     val invoiceType: String,
+    val invoiceStatus: String,
     val customerName: String,
     val invoiceDate: String,
     val totalItemQty: Int,
@@ -3564,7 +3749,7 @@ fun SalesReportScreen(
         val now = Instant.now().atZone(ZoneId.systemDefault())
         val currentMonth = now.year * 12 + now.monthValue
         val last12 = records.filter { record ->
-            if (record.createdAtMillis <= 0L) return@filter false
+            if (record.cancelled || record.createdAtMillis <= 0L) return@filter false
             val d = Instant.ofEpochMilli(record.createdAtMillis).atZone(ZoneId.systemDefault())
             val recordMonth = d.year * 12 + d.monthValue
             currentMonth - recordMonth in 0..11
@@ -3693,10 +3878,11 @@ fun DropdownField(
 }
 
 fun buildReportRows(records: List<InvoiceRecord>, reportType: String): List<ReportRow> {
+    val activeOnly = records.filter { !it.cancelled }
     val grouped = if (reportType == "Month-wise") {
-        records.groupBy { monthKey(it.createdAtMillis) }
+        activeOnly.groupBy { monthKey(it.createdAtMillis) }
     } else {
-        records.groupBy { it.customerName.ifBlank { "Walk-in Customer" } }
+        activeOnly.groupBy { it.customerName.ifBlank { "Walk-in Customer" } }
     }
     return grouped.entries
         .map { (key, list) ->
@@ -3716,6 +3902,7 @@ fun buildReportDetailRows(records: List<InvoiceRecord>, customers: List<Customer
         .sortedByDescending { it.createdAtMillis }
         .flatMap { record ->
             val status = if (record.paymentReceived) "Received" else "Pending"
+            val invStatus = invoiceRecordStatusLabel(record.cancelled)
             val invType = normalizeInvoiceType(record.invoiceType)
             val shipping = record.shippingCharges
             val customer = record.customerName.ifBlank { "Walk-in Customer" }
@@ -3736,7 +3923,8 @@ fun buildReportDetailRows(records: List<InvoiceRecord>, customers: List<Customer
                         lineTotal = 0.0,
                         shippingCharges = shipping,
                         invoiceTotal = record.total,
-                        paymentStatus = status
+                        paymentStatus = status,
+                        invoiceStatus = invStatus
                     )
                 )
             } else {
@@ -3754,7 +3942,8 @@ fun buildReportDetailRows(records: List<InvoiceRecord>, customers: List<Customer
                         lineTotal = item.lineTotal(),
                         shippingCharges = shipping,
                         invoiceTotal = record.total,
-                        paymentStatus = status
+                        paymentStatus = status,
+                        invoiceStatus = invStatus
                     )
                 }
             }
@@ -3768,6 +3957,7 @@ fun buildInvoicePdfRows(records: List<InvoiceRecord>): List<ReportInvoicePdfRow>
             ReportInvoicePdfRow(
                 invoiceNumber = record.invoiceNumber,
                 invoiceType = normalizeInvoiceType(record.invoiceType),
+                invoiceStatus = invoiceRecordStatusLabel(record.cancelled),
                 customerName = record.customerName.ifBlank { "Walk-in Customer" },
                 invoiceDate = record.invoiceDate,
                 totalItemQty = record.items.sumOf { it.normalizedQuantity() },
@@ -3790,7 +3980,7 @@ private data class ItemSalesB2bB2cAgg(
 /** One row per distinct item name with quantity and sales split by B2B vs B2C invoices. */
 private fun buildItemSalesB2bB2cRows(records: List<InvoiceRecord>): List<Pair<String, ItemSalesB2bB2cAgg>> {
     val map = linkedMapOf<String, ItemSalesB2bB2cAgg>()
-    records.forEach { record ->
+    records.filter { !it.cancelled }.forEach { record ->
         val isB2b = normalizeInvoiceType(record.invoiceType) == "B2B"
         record.items.forEach itemLoop@{ item ->
             val name = item.productName.trim()
@@ -3819,6 +4009,7 @@ data class CustomerSalesExcelRow(
 /** Customer + phone bucket: invoice count and sum of totals for filtered records. */
 fun buildCustomerSalesExcelRows(records: List<InvoiceRecord>): List<CustomerSalesExcelRow> {
     return records
+        .filter { !it.cancelled }
         .groupBy {
             val n = it.customerName.ifBlank { "Walk-in Customer" }
             val p = it.customerPhone.trim()
@@ -3883,6 +4074,9 @@ private fun mergeLoadDepth(
     val c = (current as InvoiceHistoryLoadDepth.LastDays).days
     return InvoiceHistoryLoadDepth.LastDays(maxOf(c, r))
 }
+
+/** UI / reports: human-readable invoice lifecycle state. */
+fun invoiceRecordStatusLabel(cancelled: Boolean): String = if (cancelled) "Cancelled" else "Active"
 
 fun money(value: Double): String {
     return value.roundToInt().toString()
@@ -4081,7 +4275,9 @@ class BillingStorage(context: Context) {
                                 parseDateToMillis(invoiceDate)
                             ),
                             paymentReceived = obj.optBoolean("paymentReceived", false),
-                            invoiceType = normalizeInvoiceType(obj.optString("invoiceType", "B2C"))
+                            invoiceType = normalizeInvoiceType(obj.optString("invoiceType", "B2C")),
+                            notes = obj.optString("notes", ""),
+                            cancelled = obj.optBoolean("cancelled", false)
                         )
                     )
                 } catch (_: Exception) {
@@ -4107,6 +4303,8 @@ class BillingStorage(context: Context) {
                     put("createdAtMillis", it.createdAtMillis)
                     put("paymentReceived", it.paymentReceived)
                     put("invoiceType", normalizeInvoiceType(it.invoiceType))
+                    put("notes", it.notes)
+                    put("cancelled", it.cancelled)
                 }
             )
         }
@@ -4274,6 +4472,8 @@ private fun invoiceRecordToBackupJson(rec: InvoiceRecord, storedPdfPathInZip: St
         put("createdAtMillis", rec.createdAtMillis)
         put("paymentReceived", rec.paymentReceived)
         put("invoiceType", normalizeInvoiceType(rec.invoiceType))
+        put("notes", rec.notes)
+        put("cancelled", rec.cancelled)
         if (storedPdfPathInZip != null) put("storedPdf", storedPdfPathInZip)
     }
 }
@@ -4548,6 +4748,7 @@ private fun applyFullRestoreToUi(
     invoiceDraft.invoiceDate = ""
     invoiceDraft.editingInvoiceNumber = null
     invoiceDraft.shippingChargesInput = ""
+    invoiceDraft.notes = ""
     invoiceDraft.invoiceType = "B2C"
     invoiceDraft.lineItems.clear()
     invoiceDraft.invoiceNumber = storage.previewInvoiceNumber()
@@ -4607,6 +4808,7 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
         for (i in 0 until invArr.length()) {
             val o = invArr.getJSONObject(i)
             val invoiceNumber = o.getString("invoiceNumber")
+            val cancelledRestore = o.optBoolean("cancelled", false)
             val storedPdf = o.optString("storedPdf", "")
             val bytes = if (storedPdf.isNotBlank()) pdfBytesByPath[storedPdf] else null
             var filePath = ""
@@ -4624,9 +4826,10 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
                     items = parseInvoiceLineItemsFromBackupJson(o.optJSONArray("items")),
                     shippingCharges = o.optDouble("shippingCharges", 0.0),
                     total = o.getDouble("total"),
-                    invoiceType = normalizeInvoiceType(o.optString("invoiceType", "B2C"))
+                    invoiceType = normalizeInvoiceType(o.optString("invoiceType", "B2C")),
+                    notes = o.optString("notes", "")
                 )
-                val regenerated = InvoicePdfGenerator.createInvoicePdf(context, data)
+                val regenerated = InvoicePdfGenerator.createInvoicePdf(context, data, cancelledRestore)
                 filePath = regenerated?.absolutePath.orEmpty()
             }
             restored.add(
@@ -4641,7 +4844,9 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
                     filePath = filePath,
                     createdAtMillis = o.optLong("createdAtMillis", 0L),
                     paymentReceived = o.optBoolean("paymentReceived", false),
-                    invoiceType = normalizeInvoiceType(o.optString("invoiceType", "B2C"))
+                    invoiceType = normalizeInvoiceType(o.optString("invoiceType", "B2C")),
+                    notes = o.optString("notes", ""),
+                    cancelled = cancelledRestore
                 )
             )
         }
@@ -4707,20 +4912,31 @@ private fun pdfCenteredSingleLineBaseline(top: Float, bottom: Float, fm: Paint.F
     return cy - (fm.ascent + fm.descent) / 2f
 }
 
+/** [tightTrailing]: false = next-line baseline for stacking text; true = snug below last line (e.g. before a rule). */
 private fun drawPdfWrappedLeft(
     canvas: Canvas,
     text: String,
     paint: Paint,
     x: Float,
     startBaseline: Float,
-    maxWidth: Float
+    maxWidth: Float,
+    tightTrailing: Boolean = false
 ): Float {
     val lines = pdfWrapText(text, paint, maxWidth)
+    if (lines.isEmpty()) return startBaseline
     val lh = paintLineHeight(paint)
+    val fm = paint.fontMetrics
     lines.forEachIndexed { i, line ->
-        canvas.drawText(line, x, startBaseline + i * lh, paint)
+        if (line.isNotEmpty()) {
+            canvas.drawText(line, x, startBaseline + i * lh, paint)
+        }
     }
-    return startBaseline + lines.size * lh
+    val lastBaseline = startBaseline + (lines.size - 1) * lh
+    return if (tightTrailing) {
+        lastBaseline + fm.descent + 4f
+    } else {
+        lastBaseline + lh
+    }
 }
 
 /** Makes near-black pixels transparent so [R.drawable.brand_logo] matches any surface (UI + PDF). */
@@ -4792,16 +5008,66 @@ private fun removeBlackBackgroundFromLogo(source: Bitmap): Bitmap {
     return out
 }
 
+/** Writes a new invoice PDF (optional CANCELLED watermark) and moves it to a unique path, deleting the previous file. */
+private fun replaceInvoicePdfForRecord(context: Context, record: InvoiceRecord, stampCancelled: Boolean): File? {
+    val data = invoiceDataFromRecord(record)
+    val newPdf = InvoicePdfGenerator.createInvoicePdf(context, data, stampCancelled) ?: return null
+    val oldPdf = File(record.filePath)
+    val dest = File(
+        newPdf.parentFile ?: oldPdf.parentFile ?: context.filesDir,
+        "Invoice_${record.invoiceNumber}_${System.currentTimeMillis()}.pdf"
+    )
+    val finalFile = try {
+        if (newPdf.absolutePath != dest.absolutePath) newPdf.copyTo(dest, overwrite = true) else newPdf
+    } catch (_: Exception) {
+        newPdf
+    }
+    if (newPdf.absolutePath != finalFile.absolutePath && newPdf.exists()) newPdf.delete()
+    if (oldPdf.exists() && oldPdf.absolutePath != finalFile.absolutePath) oldPdf.delete()
+    return finalFile
+}
+
 object InvoicePdfGenerator {
     private fun wrapProductNameLines(text: String, paint: Paint, maxWidth: Float): List<String> =
         pdfWrapText(text, paint, maxWidth)
 
-    fun createInvoicePdf(context: Context, invoice: InvoiceData): File? {
+    private fun drawCancelledInvoiceWatermark(canvas: Canvas) {
+        val pageW = 1240f
+        val pageH = 1754f
+        val cx = pageW / 2f
+        val cy = pageH / 2f
+        val label = "CANCELLED"
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(90, 190, 50, 50)
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        var textSize = 260f
+        paint.textSize = textSize
+        val maxTextWidth = pageW * 0.82f
+        while (paint.measureText(label) > maxTextWidth && textSize > 96f) {
+            textSize -= 12f
+            paint.textSize = textSize
+        }
+        val fm = paint.fontMetrics
+        val baselineY = cy - (fm.ascent + fm.descent) / 2f
+        canvas.save()
+        canvas.rotate(-34f, cx, cy)
+        canvas.drawText(label, cx, baselineY, paint)
+        canvas.restore()
+    }
+
+    fun createInvoicePdf(context: Context, invoice: InvoiceData, stampCancelled: Boolean = false): File? {
         return try {
             val document = PdfDocument()
             var pageNumber = 1
             var page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
             var canvas = page.canvas
+
+            fun finishCurrentPage() {
+                if (stampCancelled) drawCancelledInvoiceWatermark(canvas)
+                document.finishPage(page)
+            }
 
             // Colors aligned with CrumbsAndSoulTheme / BrandLightColors (light).
             val themeBackground = Color.parseColor("#F7F4EA")
@@ -5137,7 +5403,7 @@ object InvoicePdfGenerator {
             fun continuationFirstItemBaseline(): Float = 86f + 56f + 56f + 42f
 
             var rowBaseline = if (needTableOnNewPage) {
-                document.finishPage(page)
+                finishCurrentPage()
                 pageNumber += 1
                 page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
                 canvas = page.canvas
@@ -5159,7 +5425,7 @@ object InvoicePdfGenerator {
             }
 
             fun startContinuationPageWithTableHeader() {
-                document.finishPage(page)
+                finishCurrentPage()
                 pageNumber += 1
                 page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
                 canvas = page.canvas
@@ -5168,7 +5434,7 @@ object InvoicePdfGenerator {
             }
 
             fun startBlankTotalsPage() {
-                document.finishPage(page)
+                finishCurrentPage()
                 pageNumber += 1
                 page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
                 canvas = page.canvas
@@ -5247,7 +5513,25 @@ object InvoicePdfGenerator {
             val totalAmtBaseline = pdfCenteredSingleLineBaseline(totTop, totBot, strongRightPaint.fontMetrics)
             canvas.drawText("₹${money(invoice.total)}", amountRightX, totalAmtBaseline, strongRightPaint)
             val totalBoxBottom = totBot
-            var footerRuleY = totalBoxBottom + 40f
+            val footerTextW = (contentRight - contentLeft - 12f).coerceAtLeast(120f)
+            var belowTotalsY = totalBoxBottom + if (invoice.notes.isNotBlank()) 18f else 28f
+            if (invoice.notes.isNotBlank()) {
+                val notesTitlePaint = Paint(strongPaint).apply { textSize = 26f }
+                belowTotalsY = drawPdfWrappedLeft(canvas, "Notes", notesTitlePaint, contentLeft, belowTotalsY, footerTextW)
+                belowTotalsY += 6f
+                belowTotalsY = drawPdfWrappedLeft(
+                    canvas,
+                    invoice.notes.trim(),
+                    bodyPaint,
+                    contentLeft,
+                    belowTotalsY,
+                    footerTextW,
+                    tightTrailing = true
+                )
+                belowTotalsY += 4f
+            }
+            val gapBeforeFooterRule = if (invoice.notes.isNotBlank()) 8f else 20f
+            var footerRuleY = belowTotalsY + gapBeforeFooterRule
             canvas.drawLine(contentLeft, footerRuleY, contentRight, footerRuleY, mutedLinePaint)
 
             val upiVpa = INVOICE_UPI_VPA
@@ -5255,11 +5539,10 @@ object InvoicePdfGenerator {
                 textSize = 26f
                 color = themePrimary
             }
-            val footerTextW = (contentRight - contentLeft - 12f).coerceAtLeast(120f)
             val qrSizePts = 180f
             val footerBlockMinH = 38f + 220f + qrSizePts + 80f
             if (footerRuleY + footerBlockMinH > 1680f) {
-                document.finishPage(page)
+                finishCurrentPage()
                 pageNumber += 1
                 page = document.startPage(PdfDocument.PageInfo.Builder(1240, 1754, pageNumber).create())
                 canvas = page.canvas
@@ -5330,7 +5613,7 @@ object InvoicePdfGenerator {
                 footerTextW
             )
 
-            document.finishPage(page)
+            finishCurrentPage()
             val folder = File(
                 context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
                 "CrumbsAndSoulInvoices"
@@ -5497,17 +5780,19 @@ fun createSalesReportPdf(
         y += genLines.size * genLh + 32f
 
         val invoiceRows = buildInvoicePdfRows(records)
-        val xInv = 70f
-        val xType = 268f
+        val xInv = 62f
+        val xType = 188f
+        val xStatus = 258f
         val xCust = 348f
-        val xDate = 558f
-        val rQty = 776f
-        val rShip = 912f
+        val xDate = 538f
+        val rQty = 758f
+        val rShip = 898f
         val rTotal = 1148f
-        val wInv = (xType - xInv - 12f).coerceAtLeast(60f)
-        val wType = (xCust - xType - 10f).coerceAtLeast(40f)
-        val wCust = (xDate - xCust - 12f).coerceAtLeast(80f)
-        val wDate = (rQty - xDate - 18f).coerceAtLeast(60f)
+        val wInv = (xType - xInv - 8f).coerceAtLeast(55f)
+        val wType = (xStatus - xType - 8f).coerceAtLeast(36f)
+        val wStatus = (xCust - xStatus - 8f).coerceAtLeast(52f)
+        val wCust = (xDate - xCust - 10f).coerceAtLeast(72f)
+        val wDate = (rQty - xDate - 14f).coerceAtLeast(56f)
         val qtyRightPaint = Paint(smallBodyPaint).apply { textAlign = Paint.Align.RIGHT }
         val shipRightPaint = Paint(smallBodyPaint).apply { textAlign = Paint.Align.RIGHT }
         val totalRightPaint = Paint(smallBodyPaint).apply { textAlign = Paint.Align.RIGHT }
@@ -5518,9 +5803,17 @@ fun createSalesReportPdf(
         fun detailRowHeight(row: ReportInvoicePdfRow): Float {
             val invLines = pdfWrapText(row.invoiceNumber, smallBodyPaint, wInv)
             val typeLines = pdfWrapText(row.invoiceType, smallBodyPaint, wType)
+            val statLines = pdfWrapText(row.invoiceStatus, smallBodyPaint, wStatus)
             val custLines = pdfWrapText(row.customerName, smallBodyPaint, wCust)
             val dateLines = pdfWrapText(row.invoiceDate, smallBodyPaint, wDate)
-            val maxTextLines = maxOf(invLines.size, typeLines.size, custLines.size, dateLines.size, 1)
+            val maxTextLines = maxOf(
+                invLines.size,
+                typeLines.size,
+                statLines.size,
+                custLines.size,
+                dateLines.size,
+                1
+            )
             return maxTextLines * smallLh + 10f
         }
 
@@ -5540,6 +5833,7 @@ fun createSalesReportPdf(
         fun drawDetailsHeader() {
             canvas.drawText("Inv#", xInv, y, smallBoldPaint)
             canvas.drawText("Type", xType, y, smallBoldPaint)
+            canvas.drawText("Status", xStatus, y, smallBoldPaint)
             canvas.drawText("Customer", xCust, y, smallBoldPaint)
             canvas.drawText("Date", xDate, y, smallBoldPaint)
             canvas.drawText("Qty", rQty, y, hdrQtyRight)
@@ -5564,9 +5858,17 @@ fun createSalesReportPdf(
         invoiceRows.forEach { row ->
             val invLines = pdfWrapText(row.invoiceNumber, smallBodyPaint, wInv)
             val typeLines = pdfWrapText(row.invoiceType, smallBodyPaint, wType)
+            val statLines = pdfWrapText(row.invoiceStatus, smallBodyPaint, wStatus)
             val custLines = pdfWrapText(row.customerName, smallBodyPaint, wCust)
             val dateLines = pdfWrapText(row.invoiceDate, smallBodyPaint, wDate)
-            val maxTextLines = maxOf(invLines.size, typeLines.size, custLines.size, dateLines.size, 1)
+            val maxTextLines = maxOf(
+                invLines.size,
+                typeLines.size,
+                statLines.size,
+                custLines.size,
+                dateLines.size,
+                1
+            )
             val rowH = maxTextLines * smallLh + 10f
             if (y + rowH > reportPageBottomY) {
                 // Only move to a new page if the full row fits below headers there (avoid infinite continuation).
@@ -5580,6 +5882,7 @@ fun createSalesReportPdf(
                 val bl = rowTop + i * smallLh
                 if (i < invLines.size) canvas.drawText(invLines[i], xInv, bl, smallBodyPaint)
                 if (i < typeLines.size) canvas.drawText(typeLines[i], xType, bl, smallBodyPaint)
+                if (i < statLines.size) canvas.drawText(statLines[i], xStatus, bl, smallBodyPaint)
                 if (i < custLines.size) canvas.drawText(custLines[i], xCust, bl, smallBodyPaint)
                 if (i < dateLines.size) canvas.drawText(dateLines[i], xDate, bl, smallBodyPaint)
             }
@@ -5650,24 +5953,26 @@ fun createSalesReportExcel(
         sheet1.createRow(rowIndex++).apply {
             createCell(0).setCellValue("Inv#")
             createCell(1).setCellValue("Type")
-            createCell(2).setCellValue("Customer")
-            createCell(3).setCellValue("Date")
-            createCell(4).setCellValue("Qty")
-            createCell(5).setCellValue("Ship (₹)")
-            createCell(6).setCellValue("Total (₹)")
+            createCell(2).setCellValue("Status")
+            createCell(3).setCellValue("Customer")
+            createCell(4).setCellValue("Date")
+            createCell(5).setCellValue("Qty")
+            createCell(6).setCellValue("Ship (₹)")
+            createCell(7).setCellValue("Total (₹)")
         }
         buildInvoicePdfRows(records).forEach { inv ->
             sheet1.createRow(rowIndex++).apply {
                 createCell(0).setCellValue(inv.invoiceNumber)
                 createCell(1).setCellValue(inv.invoiceType)
-                createCell(2).setCellValue(inv.customerName)
-                createCell(3).setCellValue(inv.invoiceDate)
-                createCell(4).setCellValue(inv.totalItemQty.toDouble())
-                createCell(5).setCellValue(inv.shippingCharges)
-                createCell(6).setCellValue(inv.invoiceTotal)
+                createCell(2).setCellValue(inv.invoiceStatus)
+                createCell(3).setCellValue(inv.customerName)
+                createCell(4).setCellValue(inv.invoiceDate)
+                createCell(5).setCellValue(inv.totalItemQty.toDouble())
+                createCell(6).setCellValue(inv.shippingCharges)
+                createCell(7).setCellValue(inv.invoiceTotal)
             }
         }
-        sheet1.safeAutoSizeColumnsInclusive(6)
+        sheet1.safeAutoSizeColumnsInclusive(7)
 
         // Sheet 2 — item-wise sales with B2B / B2C split.
         val sheet2 = workbook.createSheet("Item Sales B2B B2C")
@@ -5870,6 +6175,11 @@ private fun buildInvoiceWhatsAppShareMessage(invoice: InvoiceData): String {
         appendLine("Type: $invType")
         appendLine("Total: ₹${money(invoice.total)}")
         appendLine()
+        if (invoice.notes.isNotBlank()) {
+            appendLine("Notes:")
+            appendLine(invoice.notes.trim())
+            appendLine()
+        }
         appendLine("UPI ID: $INVOICE_UPI_VPA")
         appendLine()
         appendLine("— Crumbs & Soul")
@@ -5944,7 +6254,8 @@ private fun invoiceDataFromRecord(record: InvoiceRecord): InvoiceData =
         items = record.items,
         shippingCharges = record.shippingCharges,
         total = record.total,
-        invoiceType = record.invoiceType
+        invoiceType = record.invoiceType,
+        notes = record.notes
     )
 
 /** Message when sharing only the payment QR (e.g. from invoice history). */
