@@ -74,7 +74,13 @@ object AutoBackupNotifications {
             .setContentText("Automatic full backup saved: $detail")
             .setStyle(
                 NotificationCompat.BigTextStyle()
-                    .bigText("Automatic full backup finished successfully.\n\nFile: $detail\n\nPath: ${zipFile.absolutePath}")
+                    .bigText(
+                        "Automatic full backup finished successfully.\n\n" +
+                            "File: $detail\n\n" +
+                            "Saved as the single latest backup (previous copies overwritten).\n" +
+                            "Also mirrored to Download/CrumbsAndSoulBackups when possible.\n\n" +
+                            "App path: ${zipFile.absolutePath}"
+                    )
             )
             .setContentIntent(pi)
             .setAutoCancel(true)

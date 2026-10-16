@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -21,6 +23,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.text.format.DateFormat
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Toast
 import com.google.zxing.BarcodeFormat
@@ -156,6 +159,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -167,10 +171,12 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipException
 import java.util.zip.ZipInputStream
@@ -436,22 +442,6 @@ fun BillingApp() {
             } else {
                 scope.launch { snackbarHostState.showSnackbar("Failed to generate invoice PDF") }
                 null
-            }
-        }
-    }
-
-    val onExportFullBackupStable = remember(context, storage) {
-        {
-            val zip = buildFullBackupZip(context, storage)
-            if (zip != null) {
-                shareAnyFile(
-                    context,
-                    zip,
-                    "application/zip",
-                    "Export full app backup"
-                )
-            } else {
-                Toast.makeText(context, "Failed to create backup", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -796,7 +786,6 @@ fun BillingApp() {
                 )
                 AppSection.Backup -> BackupScreen(
                     storage = storage,
-                    onExportFullBackup = onExportFullBackupStable,
                     onImportFullBackup = onImportFullBackupStable,
                     onImportFullBackupFile = onImportFullBackupFileStable
                 )
@@ -3216,7 +3205,13 @@ fun InvoiceHistoryScreen(
     }
 }
 
-data class ReportRow(val key: String, val invoiceCount: Int, val totalSales: Double)
+data class ReportRow(
+    val key: String,
+    val invoiceCount: Int,
+    val totalSales: Double,
+    /** Units sold — populated for Product-wise reports; 0 for other report types. */
+    val quantitySold: Int = 0
+)
 data class ReportDetailRow(
     val invoiceNumber: String,
     val invoiceType: String,
@@ -3249,7 +3244,6 @@ data class ReportInvoicePdfRow(
 @Composable
 fun BackupScreen(
     storage: BillingStorage,
-    onExportFullBackup: () -> Unit,
     onImportFullBackup: (Uri) -> Unit,
     onImportFullBackupFile: (File) -> Unit
 ) {
@@ -3260,9 +3254,56 @@ fun BackupScreen(
     var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
     var pendingRestoreFile by remember { mutableStateOf<File?>(null) }
     var scannedBackupFiles by remember { mutableStateOf<List<File>>(emptyList()) }
+    var isExportingBackup by remember { mutableStateOf(false) }
+    var exportResult by remember { mutableStateOf<FullBackupExportResult?>(null) }
     val backupScanDateFormat = remember {
         SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault())
     }
+
+    fun runExportBackup() {
+        if (isExportingBackup) return
+        importScope.launch {
+            isExportingBackup = true
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    exportFullBackupForUser(context.applicationContext, storage)
+                }
+                if (result != null) {
+                    exportResult = result
+                } else {
+                    Toast.makeText(context, "Failed to create backup", Toast.LENGTH_LONG).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(
+                    context,
+                    e.message?.takeIf { it.isNotBlank() } ?: "Failed to create backup",
+                    Toast.LENGTH_LONG
+                ).show()
+            } finally {
+                isExportingBackup = false
+            }
+        }
+    }
+
+    val writeStoragePermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) {
+        // Proceed even if denied — app copy + share still work; public Downloads may be skipped.
+        runExportBackup()
+    }
+
+    fun onExportBackupClicked() {
+        if (isExportingBackup) return
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            val perm = Manifest.permission.WRITE_EXTERNAL_STORAGE
+            if (ContextCompat.checkSelfPermission(context, perm) != PackageManager.PERMISSION_GRANTED) {
+                writeStoragePermissionLauncher.launch(perm)
+                return
+            }
+        }
+        runExportBackup()
+    }
+
     val restoreBackupLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -3334,13 +3375,15 @@ fun BackupScreen(
             .padding(bottom = 24.dp)
     ) {
         Text(
-            "Export all products, customers, invoice history, and PDFs as a single ZIP archive. " +
-                "Share or save it (Drive, email, Files, etc.). On a new phone, install the app and use Import to restore."
+            "Export a complete backup of products, customers, invoice history, invoice sequence, and invoice PDFs " +
+                "as one ZIP file. The file is saved to Download/CrumbsAndSoulBackups (visible in the Files / Downloads app), " +
+                "and you can share it via WhatsApp, email, or other apps. On a new phone, install the app and use Import to restore."
         )
         Spacer(modifier = Modifier.height(12.dp))
         Text(
             "Import replaces all products, customers, and invoice history on this device and " +
-                "rebuilds invoice PDFs from the backup. You can tap the latest backup below or choose any .zip file.",
+                "restores invoice PDFs from the backup (or regenerates them if needed). " +
+                "You can tap the latest backup below or choose any .zip file from Download/CrumbsAndSoulBackups, Drive, or WhatsApp.",
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -3350,8 +3393,11 @@ fun BackupScreen(
         Text("Automatic backup", fontWeight = FontWeight.SemiBold)
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            "Runs on your schedule (device local time). Only one file is kept; each run replaces " +
-                AutoBackupScheduler.autoBackupZipFile(context).name + " in app storage. " +
+            "Runs on your schedule (device local time). Manual and automatic backups share one file — " +
+                AutoBackupScheduler.FULL_BACKUP_ZIP_NAME +
+                " — which is overwritten on every successful backup and copied to Download/" +
+                AutoBackupScheduler.BACKUP_FOLDER_NAME +
+                ". Older backup copies are removed so only the latest remains. " +
                 "You’ll get a notification after each run (success or failure) if notifications are allowed.",
             fontSize = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -3451,14 +3497,15 @@ fun BackupScreen(
                 modifier = Modifier
                     .weight(1f)
                     .height(backupActionBtnHeight),
-                onClick = { onExportFullBackup() }
+                enabled = !isExportingBackup,
+                onClick = { onExportBackupClicked() }
             ) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        "Export backup",
+                        if (isExportingBackup) "Exporting…" else "Export backup",
                         textAlign = TextAlign.Center,
                         maxLines = 2,
                         style = MaterialTheme.typography.labelLarge
@@ -3469,6 +3516,7 @@ fun BackupScreen(
                 modifier = Modifier
                     .weight(1f)
                     .height(backupActionBtnHeight),
+                enabled = !isExportingBackup,
                 onClick = { showImportBackupDialog = true }
             ) {
                 Box(
@@ -3608,8 +3656,9 @@ fun BackupScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                     } else {
                         Text(
-                            "No backup .zip files were found in this app’s storage (exports, automatic backup, or app Downloads). " +
-                                "Use the button below to pick a file from Google Drive, Downloads, or anywhere else.",
+                            "No backup .zip files were found in app storage. " +
+                                "If you exported earlier, pick the file from Download/CrumbsAndSoulBackups, " +
+                                "Google Drive, WhatsApp, or email using the button below.",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -3696,6 +3745,94 @@ fun BackupScreen(
             }
         )
     }
+
+    if (isExportingBackup) {
+        Dialog(onDismissRequest = {}) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(24.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(36.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text(
+                        "Creating full backup…\nPacking products, customers, invoices, and PDFs.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+
+    val readyExport = exportResult
+    if (readyExport != null) {
+        AlertDialog(
+            onDismissRequest = { exportResult = null },
+            title = { Text("Backup ready") },
+            text = {
+                Column {
+                    Text("Full backup created successfully with no data loss.")
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (readyExport.publicLocationLabel != null) {
+                        Text(
+                            "Saved to:\n${readyExport.publicLocationLabel}",
+                            fontWeight = FontWeight.Medium
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            "Open it from the Files or Downloads app. You can also share it below.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    } else {
+                        Text(
+                            "A shareable copy is ready. Use WhatsApp, Email, or Other apps to save it somewhere you can access later " +
+                                "(public Downloads was unavailable on this device).",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Button(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { shareBackupToWhatsApp(context, readyExport.shareFile) }
+                    ) {
+                        Text("Share via WhatsApp")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { shareBackupViaEmail(context, readyExport.shareFile) }
+                    ) {
+                        Text("Share via Email")
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = {
+                            shareAnyFile(
+                                context,
+                                readyExport.shareFile,
+                                "application/zip",
+                                "Share full backup"
+                            )
+                        }
+                    ) {
+                        Text("Share via other apps")
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { exportResult = null }) {
+                    Text("Done")
+                }
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -3706,12 +3843,17 @@ fun SalesReportScreen(
     onReportExported: (File) -> Unit
 ) {
     val context = LocalContext.current
-    val reportTypeOptions = listOf("Month-wise", "Customer-wise")
+    val reportTypeOptions = listOf("Month-wise", "Year-wise", "Customer-wise", "Product-wise")
     val formatOptions = listOf("PDF", "Excel")
-    val monthOptions = remember(records) {
+    val yearOptions = remember(records) {
         buildList {
-            add("All Months")
-            addAll(records.map { monthKey(it.createdAtMillis) }.distinct().sortedDescending())
+            add("All Years")
+            addAll(
+                records.map { yearKey(it.createdAtMillis) }
+                    .filter { it != "Unknown Year" }
+                    .distinct()
+                    .sortedDescending()
+            )
         }
     }
     val customerOptions = remember(records) {
@@ -3723,39 +3865,48 @@ fun SalesReportScreen(
 
     var reportType by remember { mutableStateOf(reportTypeOptions.first()) }
     var exportFormat by remember { mutableStateOf(formatOptions.first()) }
+    var yearFilter by remember { mutableStateOf("All Years") }
     var monthFilter by remember { mutableStateOf("All Months") }
     var customerFilter by remember { mutableStateOf("All Customers") }
     var reportTypeExpanded by remember { mutableStateOf(false) }
     var formatExpanded by remember { mutableStateOf(false) }
+    var yearExpanded by remember { mutableStateOf(false) }
     var monthExpanded by remember { mutableStateOf(false) }
     var customerExpanded by remember { mutableStateOf(false) }
 
-    LaunchedEffect(monthOptions, monthFilter) {
-        if (monthFilter !in monthOptions) monthFilter = "All Months"
+    // Month options narrowed when a specific year is selected.
+    val monthOptionsForYear = remember(records, yearFilter) {
+        buildList {
+            add("All Months")
+            val months = records.asSequence()
+                .filter { yearFilter == "All Years" || yearKey(it.createdAtMillis) == yearFilter }
+                .map { monthKey(it.createdAtMillis) }
+                .distinct()
+                .sortedDescending()
+                .toList()
+            addAll(months)
+        }
+    }
+
+    LaunchedEffect(yearOptions, yearFilter) {
+        if (yearFilter !in yearOptions) yearFilter = "All Years"
+    }
+    LaunchedEffect(monthOptionsForYear, monthFilter) {
+        if (monthFilter !in monthOptionsForYear) monthFilter = "All Months"
     }
     LaunchedEffect(customerOptions, customerFilter) {
         if (customerFilter !in customerOptions) customerFilter = "All Customers"
     }
 
-    val filtered = remember(records, monthFilter, customerFilter) {
+    val filtered = remember(records, yearFilter, monthFilter, customerFilter) {
         records.filter {
+            val yearMatch = yearFilter == "All Years" || yearKey(it.createdAtMillis) == yearFilter
             val monthMatch = monthFilter == "All Months" || monthKey(it.createdAtMillis) == monthFilter
             val customerMatch = customerFilter == "All Customers" || it.customerName == customerFilter
-            monthMatch && customerMatch
+            yearMatch && monthMatch && customerMatch
         }
     }
     val rows = remember(filtered, reportType) { buildReportRows(filtered, reportType) }
-    val previewRows = remember(records) {
-        val now = Instant.now().atZone(ZoneId.systemDefault())
-        val currentMonth = now.year * 12 + now.monthValue
-        val last12 = records.filter { record ->
-            if (record.cancelled || record.createdAtMillis <= 0L) return@filter false
-            val d = Instant.ofEpochMilli(record.createdAtMillis).atZone(ZoneId.systemDefault())
-            val recordMonth = d.year * 12 + d.monthValue
-            currentMonth - recordMonth in 0..11
-        }
-        buildReportRows(last12, "Month-wise")
-    }
 
     val pageScrollState = rememberScrollState()
 
@@ -3765,6 +3916,13 @@ fun SalesReportScreen(
             .verticalScroll(pageScrollState)
             .padding(bottom = 24.dp)
     ) {
+    Text(
+        "Choose Month-wise or Year-wise summaries, Customer-wise totals, or Product-wise units sold " +
+            "for the selected year/month period.",
+        fontSize = 13.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+    Spacer(modifier = Modifier.height(10.dp))
     DropdownField(
         label = "Report Type",
         value = reportType,
@@ -3774,9 +3932,17 @@ fun SalesReportScreen(
         onSelect = { reportType = it }
     )
     DropdownField(
+        label = "Year Filter",
+        value = yearFilter,
+        options = yearOptions,
+        expanded = yearExpanded,
+        onExpanded = { yearExpanded = it },
+        onSelect = { yearFilter = it }
+    )
+    DropdownField(
         label = "Month Filter",
         value = monthFilter,
-        options = monthOptions,
+        options = monthOptionsForYear,
         expanded = monthExpanded,
         onExpanded = { monthExpanded = it },
         onSelect = { monthFilter = it }
@@ -3799,21 +3965,40 @@ fun SalesReportScreen(
     )
 
     Spacer(modifier = Modifier.height(8.dp))
-    Text("Preview (Month-wise, Last 12 Months)", fontWeight = FontWeight.SemiBold)
-    if (previewRows.isEmpty()) {
-        Text("No data for the last 12 months.")
+    Text("Preview ($reportType)", fontWeight = FontWeight.SemiBold)
+    if (rows.isEmpty()) {
+        Text("No data for the selected filters.")
     } else {
         // Column (not LazyColumn) so this screen can use one outer verticalScroll without nested scroll issues.
         Column(modifier = Modifier.fillMaxWidth()) {
-            previewRows.take(12).forEach { row ->
+            rows.take(12).forEach { row ->
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(row.key)
-                    Text("${row.invoiceCount} invoices | ₹${money(row.totalSales)}")
+                    Text(
+                        row.key,
+                        modifier = Modifier.weight(1f).padding(end = 8.dp),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        if (reportType == "Product-wise") {
+                            "${row.quantitySold} sold | ₹${money(row.totalSales)}"
+                        } else {
+                            "${row.invoiceCount} invoices | ₹${money(row.totalSales)}"
+                        }
+                    )
                 }
                 HorizontalDivider()
+            }
+            if (rows.size > 12) {
+                Text(
+                    "+ ${rows.size - 12} more in export",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp)
+                )
             }
         }
     }
@@ -3826,9 +4011,26 @@ fun SalesReportScreen(
                 return@Button
             }
             val file = if (exportFormat == "PDF") {
-                createSalesReportPdf(context, reportType, monthFilter, customerFilter, rows, filtered)
+                createSalesReportPdf(
+                    context,
+                    reportType,
+                    yearFilter,
+                    monthFilter,
+                    customerFilter,
+                    rows,
+                    filtered
+                )
             } else {
-                createSalesReportExcel(context, reportType, monthFilter, customerFilter, rows, filtered, customers)
+                createSalesReportExcel(
+                    context,
+                    reportType,
+                    yearFilter,
+                    monthFilter,
+                    customerFilter,
+                    rows,
+                    filtered,
+                    customers
+                )
             }
             if (file != null) {
                 onReportExported(file)
@@ -3879,16 +4081,61 @@ fun DropdownField(
 
 fun buildReportRows(records: List<InvoiceRecord>, reportType: String): List<ReportRow> {
     val activeOnly = records.filter { !it.cancelled }
-    val grouped = if (reportType == "Month-wise") {
-        activeOnly.groupBy { monthKey(it.createdAtMillis) }
-    } else {
-        activeOnly.groupBy { it.customerName.ifBlank { "Walk-in Customer" } }
+    return when (reportType) {
+        "Product-wise" -> buildProductReportRows(activeOnly)
+        "Year-wise" -> activeOnly
+            .groupBy { yearKey(it.createdAtMillis) }
+            .entries
+            .map { (key, list) ->
+                ReportRow(key = key, invoiceCount = list.size, totalSales = list.sumOf { it.total })
+            }
+            .sortedByDescending { it.key }
+        "Month-wise" -> activeOnly
+            .groupBy { monthKey(it.createdAtMillis) }
+            .entries
+            .map { (key, list) ->
+                ReportRow(key = key, invoiceCount = list.size, totalSales = list.sumOf { it.total })
+            }
+            .sortedByDescending { it.totalSales }
+        else -> activeOnly
+            .groupBy { it.customerName.ifBlank { "Walk-in Customer" } }
+            .entries
+            .map { (key, list) ->
+                ReportRow(key = key, invoiceCount = list.size, totalSales = list.sumOf { it.total })
+            }
+            .sortedByDescending { it.totalSales }
     }
-    return grouped.entries
-        .map { (key, list) ->
-            ReportRow(key = key, invoiceCount = list.size, totalSales = list.sumOf { it.total })
+}
+
+/**
+ * One row per product: total units sold and line sales across active invoices in the period.
+ */
+fun buildProductReportRows(records: List<InvoiceRecord>): List<ReportRow> {
+    data class Agg(var qty: Int = 0, var sales: Double = 0.0, val invoiceNumbers: MutableSet<String> = mutableSetOf())
+    val map = linkedMapOf<String, Agg>()
+    records.filter { !it.cancelled }.forEach { record ->
+        record.items.forEach itemLoop@{ item ->
+            val name = item.productName.trim()
+            if (name.isEmpty()) return@itemLoop
+            val agg = map.getOrPut(name) { Agg() }
+            agg.qty += item.normalizedQuantity()
+            agg.sales += item.lineTotal()
+            agg.invoiceNumbers.add(record.invoiceNumber)
         }
-        .sortedByDescending { it.totalSales }
+    }
+    return map.entries
+        .map { (name, agg) ->
+            ReportRow(
+                key = name,
+                invoiceCount = agg.invoiceNumbers.size,
+                totalSales = agg.sales,
+                quantitySold = agg.qty
+            )
+        }
+        .sortedWith(
+            compareByDescending<ReportRow> { it.quantitySold }
+                .thenBy { it.key.lowercase(Locale.getDefault()) }
+        )
 }
 
 fun buildReportDetailRows(records: List<InvoiceRecord>, customers: List<Customer>): List<ReportDetailRow> {
@@ -4035,6 +4282,27 @@ fun monthKey(millis: Long): String {
     return date.format(DateTimeFormatter.ofPattern("MMM yyyy", Locale.getDefault()))
 }
 
+fun yearKey(millis: Long): String {
+    if (millis <= 0L) return "Unknown Year"
+    val date = Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate()
+    return date.year.toString()
+}
+
+/** Column header for the first summary column based on report type. */
+fun reportSummaryKeyHeader(reportType: String): String = when (reportType) {
+    "Month-wise" -> "Month"
+    "Year-wise" -> "Year"
+    "Product-wise" -> "Product"
+    else -> "Customer"
+}
+
+/** Metric column header: quantity for product reports, invoice count otherwise. */
+fun reportSummaryMetricHeader(reportType: String): String =
+    if (reportType == "Product-wise") "Qty Sold" else "Invoices"
+
+fun reportSummaryMetricValue(row: ReportRow, reportType: String): Int =
+    if (reportType == "Product-wise") row.quantitySold else row.invoiceCount
+
 fun isWithinDays(millis: Long, days: Int): Boolean {
     if (millis <= 0L) return false
     val now = System.currentTimeMillis()
@@ -4171,7 +4439,7 @@ class BillingStorage(context: Context) {
     fun getLastAutoBackupSuccessMillis(): Long = prefs.getLong(lastAutoBackupSuccessKey, 0L)
 
     fun setLastAutoBackupSuccessMillis(millis: Long) {
-        prefs.edit().putLong(lastAutoBackupSuccessKey, millis).apply()
+        prefs.edit().putLong(lastAutoBackupSuccessKey, millis).commit()
     }
 
     fun loadProducts(): List<Product> {
@@ -4325,10 +4593,56 @@ class BillingStorage(context: Context) {
         invoiceHistory: List<InvoiceRecord>,
         invoiceSequence: Int
     ) {
-        saveProducts(products)
-        saveCustomers(customers)
-        saveInvoiceHistory(invoiceHistory)
-        setInvoiceSequenceValue(invoiceSequence)
+        // Single synchronous commit so a full restore is durable before the UI reports success.
+        val productsArr = JSONArray()
+        products.forEach {
+            productsArr.put(
+                JSONObject().apply {
+                    put("name", it.name)
+                    put("defaultPrice", it.defaultPrice.roundToInt())
+                }
+            )
+        }
+        val customersArr = JSONArray()
+        customers.forEach {
+            customersArr.put(
+                JSONObject().apply {
+                    put("name", it.name)
+                    put("phone", it.phone)
+                    put("gst", it.gst)
+                    put("address", it.address)
+                }
+            )
+        }
+        val historyArr = JSONArray()
+        invoiceHistory.forEach {
+            historyArr.put(
+                JSONObject().apply {
+                    put("invoiceNumber", it.invoiceNumber)
+                    put("invoiceDate", it.invoiceDate)
+                    put("customerName", it.customerName)
+                    put("customerPhone", it.customerPhone)
+                    put("items", itemsToJson(it.items))
+                    put("shippingCharges", it.shippingCharges)
+                    put("total", it.total)
+                    put("filePath", it.filePath)
+                    put("createdAtMillis", it.createdAtMillis)
+                    put("paymentReceived", it.paymentReceived)
+                    put("invoiceType", normalizeInvoiceType(it.invoiceType))
+                    put("notes", it.notes)
+                    put("cancelled", it.cancelled)
+                }
+            )
+        }
+        val ok = prefs.edit()
+            .putString(productsKey, productsArr.toString())
+            .putString(customersKey, customersArr.toString())
+            .putString(invoiceHistoryKey, historyArr.toString())
+            .putInt(invoiceSequenceKey, invoiceSequence.coerceAtLeast(0))
+            .commit()
+        if (!ok) {
+            throw IllegalStateException("Failed to save restored data to storage")
+        }
     }
 
     fun exportProductsJson(): String {
@@ -4480,18 +4794,32 @@ private fun invoiceRecordToBackupJson(rec: InvoiceRecord, storedPdfPathInZip: St
 
 /**
  * Writes full backup bytes into [zos] (manifest + pdfs/).
+ * Streams each PDF from disk so large histories do not keep all PDF bytes in memory.
  */
 private fun writeFullBackupZipEntries(storage: BillingStorage, zos: ZipOutputStream) {
     val invoices = storage.loadInvoiceHistory()
     val invArr = JSONArray()
+    val copyBuf = ByteArray(64 * 1024)
     invoices.forEachIndexed { idx, rec ->
         val entryName = "pdfs/${idx}_${sanitizeBackupPathComponent(rec.invoiceNumber)}.pdf"
-        val pdf = File(rec.filePath)
-        val stored: String? = if (pdf.isFile && pdf.exists()) {
-            zos.putNextEntry(ZipEntry(entryName))
-            pdf.inputStream().use { input -> input.copyTo(zos) }
-            zos.closeEntry()
-            entryName
+        val pdfPath = rec.filePath.trim()
+        val pdf = if (pdfPath.isNotEmpty()) File(pdfPath) else null
+        val stored: String? = if (pdf != null && pdf.isFile) {
+            try {
+                zos.putNextEntry(ZipEntry(entryName))
+                FileInputStream(pdf).use { input ->
+                    while (true) {
+                        val n = input.read(copyBuf)
+                        if (n < 0) break
+                        zos.write(copyBuf, 0, n)
+                    }
+                }
+                zos.closeEntry()
+                entryName
+            } catch (_: Exception) {
+                runCatching { zos.closeEntry() }
+                null
+            }
         } else {
             null
         }
@@ -4510,15 +4838,15 @@ private fun writeFullBackupZipEntries(storage: BillingStorage, zos: ZipOutputStr
     zos.closeEntry()
 }
 
-/** Single manual export filename under [CrumbsAndSoulBackups] — avoids accumulating timestamped copies. */
-private const val MANUAL_FULL_BACKUP_ZIP_NAME = "CrumbsAndSoul_full_backup.zip"
+/** Canonical backup filename — same file for manual and automatic backups (always overwritten). */
+private val MANUAL_FULL_BACKUP_ZIP_NAME = AutoBackupScheduler.FULL_BACKUP_ZIP_NAME
 
 private val LEGACY_TIMESTAMPED_MANUAL_BACKUP_NAME =
     Regex("^CrumbsAndSoul_full_backup_\\d+\\.zip$", RegexOption.IGNORE_CASE)
 
 /**
- * Migrates old `CrumbsAndSoul_full_backup_<millis>.zip` files to a single [MANUAL_FULL_BACKUP_ZIP_NAME]
- * (newest wins) and deletes extra timestamped copies so only one manual backup remains.
+ * Migrates old `CrumbsAndSoul_full_backup_<millis>.zip` files to a single canonical name
+ * (newest wins) and deletes extra timestamped copies.
  */
 private fun cleanupLegacyManualBackupZips(backupDir: File) {
     try {
@@ -4539,40 +4867,255 @@ private fun cleanupLegacyManualBackupZips(backupDir: File) {
     }
 }
 
+/** Serializes manual + automatic full-backup writes so they cannot corrupt the same ZIP. */
+private val fullBackupWriteLock = Any()
+
+/**
+ * Ensures only the single latest backup [keepFile] remains in known app backup locations.
+ * Also migrates/deletes the legacy internal auto-backup filename from older app versions.
+ */
+fun pruneExtraBackupFiles(context: Context, keepFile: File) {
+    try {
+        val keepPath = try {
+            keepFile.canonicalPath
+        } catch (_: Exception) {
+            keepFile.absolutePath
+        }
+        fun deleteIfExtra(f: File?) {
+            if (f == null || !f.isFile) return
+            val path = try {
+                f.canonicalPath
+            } catch (_: Exception) {
+                f.absolutePath
+            }
+            if (path != keepPath) {
+                runCatching { f.delete() }
+            }
+        }
+        // Legacy automatic backup path (filesDir) — migrate once, then remove.
+        val legacyAuto = AutoBackupScheduler.legacyAutoBackupZipFile(context)
+        if (legacyAuto.isFile) {
+            if (!keepFile.exists()) {
+                runCatching {
+                    keepFile.parentFile?.mkdirs()
+                    legacyAuto.copyTo(keepFile, overwrite = true)
+                }
+            }
+            runCatching { legacyAuto.delete() }
+        }
+        val docsBase = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        if (docsBase != null) {
+            val backupDir = File(docsBase, AutoBackupScheduler.BACKUP_FOLDER_NAME)
+            cleanupLegacyManualBackupZips(backupDir)
+            backupDir.listFiles()?.forEach { f ->
+                if (f.isFile && f.name.endsWith(".zip", ignoreCase = true)) {
+                    deleteIfExtra(f)
+                }
+                // Never delete in-progress temps for the canonical backup
+                // (name pattern: CrumbsAndSoul_full_backup.zip[.nanos].tmp).
+                if (f.isFile &&
+                    f.name.endsWith(".tmp", ignoreCase = true) &&
+                    !f.name.startsWith(keepFile.name, ignoreCase = true)
+                ) {
+                    runCatching { f.delete() }
+                }
+                // Leftover swap file from an interrupted replace.
+                if (f.isFile && f.name.equals("${keepFile.name}.bak", ignoreCase = true)) {
+                    runCatching { f.delete() }
+                }
+            }
+        }
+        context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+            ?.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".zip", ignoreCase = true) }
+            ?.forEach { deleteIfExtra(it) }
+    } catch (_: Exception) {
+    }
+}
+
 /**
  * Writes a single full backup .zip at [zipFile], replacing any existing file.
  * @return true if the file was written successfully.
  */
 @Suppress("UNUSED_PARAMETER")
 fun buildFullBackupZipToFile(context: Context, storage: BillingStorage, zipFile: File): Boolean {
-    return try {
-        zipFile.parentFile?.mkdirs()
-        if (zipFile.exists()) zipFile.delete()
-        ZipOutputStream(FileOutputStream(zipFile)).use { zos ->
-            writeFullBackupZipEntries(storage, zos)
+    synchronized(fullBackupWriteLock) {
+        var tmp: File? = null
+        var bak: File? = null
+        return try {
+            zipFile.parentFile?.mkdirs()
+            // Unique temp name; lock prevents concurrent writers. Previous zip kept until swap succeeds.
+            tmp = File(
+                zipFile.parentFile,
+                "${zipFile.name}.${System.nanoTime()}.tmp"
+            )
+            if (tmp.exists()) tmp.delete()
+            BufferedOutputStream(FileOutputStream(tmp)).use { bos ->
+                ZipOutputStream(bos).use { zos ->
+                    writeFullBackupZipEntries(storage, zos)
+                }
+            }
+            if (!tmp.isFile || tmp.length() <= 0L) {
+                tmp.delete()
+                return false
+            }
+            if (zipFile.exists()) {
+                bak = File(zipFile.parentFile, "${zipFile.name}.bak")
+                if (bak.exists()) bak.delete()
+                if (!zipFile.renameTo(bak)) {
+                    // Could not move old file aside — copy over only after tmp is complete.
+                    tmp.copyTo(zipFile, overwrite = true)
+                    tmp.delete()
+                } else if (!tmp.renameTo(zipFile)) {
+                    tmp.copyTo(zipFile, overwrite = true)
+                    tmp.delete()
+                }
+                if (zipFile.isFile && zipFile.length() > 0L) {
+                    bak.delete()
+                } else {
+                    // Restore previous backup if the new file did not land.
+                    runCatching { zipFile.delete() }
+                    bak.renameTo(zipFile)
+                    return false
+                }
+            } else if (!tmp.renameTo(zipFile)) {
+                tmp.copyTo(zipFile, overwrite = false)
+                tmp.delete()
+            }
+            zipFile.isFile && zipFile.length() > 0L
+        } catch (_: Exception) {
+            runCatching { tmp?.delete() }
+            // Best-effort restore if we moved the old file aside.
+            val backup = bak
+            if (backup != null && backup.isFile && (!zipFile.exists() || zipFile.length() <= 0L)) {
+                runCatching { backup.renameTo(zipFile) }
+            }
+            false
         }
-        zipFile.isFile && zipFile.length() > 0L
-    } catch (_: Exception) {
-        false
     }
 }
 
 /**
  * Writes a .zip with [FULL_BACKUP_MANIFEST] plus optional PDFs under `pdfs/`.
- * Share the file to cloud/USB/Drive for transfer to a new device.
+ * Always overwrites the single canonical file under Documents/CrumbsAndSoulBackups.
  */
 fun buildFullBackupZip(context: Context, storage: BillingStorage): File? {
     return try {
-        val backupDir = File(
-            context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
-            "CrumbsAndSoulBackups"
-        ).apply { mkdirs() }
-        cleanupLegacyManualBackupZips(backupDir)
-        val zipFile = File(backupDir, MANUAL_FULL_BACKUP_ZIP_NAME)
-        if (buildFullBackupZipToFile(context, storage, zipFile)) zipFile else null
+        val zipFile = AutoBackupScheduler.primaryBackupZipFile(context)
+        cleanupLegacyManualBackupZips(zipFile.parentFile ?: return null)
+        if (buildFullBackupZipToFile(context, storage, zipFile)) {
+            pruneExtraBackupFiles(context, zipFile)
+            zipFile
+        } else {
+            null
+        }
     } catch (_: Exception) {
         null
     }
+}
+
+/** User-facing export: app copy for FileProvider share + optional public Downloads copy. */
+data class FullBackupExportResult(
+    val shareFile: File,
+    val publicLocationLabel: String?
+)
+
+/**
+ * Builds a full backup on a background thread, overwrites the single backup file,
+ * mirrors it to public Download, and returns a [FullBackupExportResult] for sharing.
+ */
+fun exportFullBackupForUser(context: Context, storage: BillingStorage): FullBackupExportResult? {
+    return try {
+        val zip = buildFullBackupZip(context, storage) ?: return null
+        pruneExtraBackupFiles(context, zip)
+        val publicLabel = runCatching { copyBackupZipToPublicDownloads(context, zip) }.getOrNull()
+        FullBackupExportResult(shareFile = zip, publicLocationLabel = publicLabel)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * Copies [zipFile] to `Downloads/CrumbsAndSoulBackups/` so users can browse it outside Android/data.
+ * @return a user-facing path label, or null if the public copy could not be written.
+ */
+fun copyBackupZipToPublicDownloads(context: Context, zipFile: File): String? {
+    if (!zipFile.isFile || zipFile.length() <= 0L) return null
+    val displayName = MANUAL_FULL_BACKUP_ZIP_NAME
+    // Environment.DIRECTORY_DOWNLOADS is "Download"; Files app shows it as Downloads.
+    val relativeFolder = "${Environment.DIRECTORY_DOWNLOADS}/CrumbsAndSoulBackups/"
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val resolver = context.contentResolver
+        val collection = MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        resolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?",
+            arrayOf(displayName, relativeFolder),
+            null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                resolver.delete(ContentUris.withAppendedId(collection, id), null, null)
+            }
+        }
+        // Also remove older rows that may have been stored without a trailing slash.
+        resolver.query(
+            collection,
+            arrayOf(MediaStore.MediaColumns._ID),
+            "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?",
+            arrayOf(displayName, relativeFolder.trimEnd('/')),
+            null
+        )?.use { cursor ->
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(0)
+                resolver.delete(ContentUris.withAppendedId(collection, id), null, null)
+            }
+        }
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+            put(MediaStore.MediaColumns.MIME_TYPE, "application/zip")
+            put(MediaStore.MediaColumns.RELATIVE_PATH, relativeFolder)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(collection, values) ?: return null
+        try {
+            resolver.openOutputStream(uri)?.use { out ->
+                FileInputStream(zipFile).use { input -> copyStream(input, out) }
+            } ?: run {
+                resolver.delete(uri, null, null)
+                return null
+            }
+            values.clear()
+            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(uri, values, null, null)
+            "Download/CrumbsAndSoulBackups/$displayName"
+        } catch (_: Exception) {
+            runCatching { resolver.delete(uri, null, null) }
+            null
+        }
+    } else {
+        @Suppress("DEPRECATION")
+        val dir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "CrumbsAndSoulBackups"
+        )
+        if (!dir.exists() && !dir.mkdirs()) return null
+        val dest = File(dir, displayName)
+        zipFile.copyTo(dest, overwrite = true)
+        if (!dest.isFile || dest.length() <= 0L) return null
+        dest.absolutePath
+    }
+}
+
+private fun copyStream(input: InputStream, output: OutputStream) {
+    val buf = ByteArray(64 * 1024)
+    while (true) {
+        val n = input.read(buf)
+        if (n < 0) break
+        output.write(buf, 0, n)
+    }
+    output.flush()
 }
 
 /**
@@ -4679,44 +5222,18 @@ private fun validateFullBackupZipInputStream(rawIn: InputStream): String? {
 }
 
 /**
- * Scans app-accessible locations for [.zip] backups (newest first).
- * Includes export folder, app Downloads, and the automatic backup file if present.
- * Returns **at most one** file — the newest candidate — so restore UI stays simple and storage stays minimal.
+ * Scans for the single canonical backup file (manual and automatic share the same path).
+ * Also migrates/removes any leftover legacy auto-backup file.
+ * Returns **at most one** file.
  */
 fun scanBackupZipFiles(context: Context): List<File> {
-    val backupDir = try {
-        File(
-            context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
-            "CrumbsAndSoulBackups"
-        )
+    return try {
+        val primary = AutoBackupScheduler.primaryBackupZipFile(context)
+        pruneExtraBackupFiles(context, primary)
+        if (primary.isFile && primary.length() >= 32L) listOf(primary) else emptyList()
     } catch (_: Exception) {
-        null
+        emptyList()
     }
-    backupDir?.let { cleanupLegacyManualBackupZips(it) }
-
-    val byPath = LinkedHashMap<String, File>()
-    fun add(f: File?) {
-        if (f == null || !f.isFile) return
-        if (!f.name.endsWith(".zip", ignoreCase = true)) return
-        if (f.length() < 32L) return
-        byPath[f.absolutePath] = f
-    }
-    try {
-        context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)?.let { base ->
-            File(base, "CrumbsAndSoulBackups").listFiles()?.forEach { add(it) }
-        }
-    } catch (_: Exception) {
-    }
-    try {
-        context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)?.listFiles()?.forEach { add(it) }
-    } catch (_: Exception) {
-    }
-    try {
-        add(AutoBackupScheduler.autoBackupZipFile(context))
-    } catch (_: Exception) {
-    }
-    val newest = byPath.values.sortedByDescending { it.lastModified() }
-    return newest.take(1)
 }
 
 private fun applyFullRestoreToUi(
@@ -4760,12 +5277,15 @@ private fun applyFullRestoreToUi(
 }
 
 private fun restoreFullBackupFromZipStream(context: Context, storage: BillingStorage, rawIn: InputStream): String? {
+    val pdfTempDir = File(context.cacheDir, "backup_restore_pdfs_${System.currentTimeMillis()}")
     return try {
-        val pdfBytesByPath = mutableMapOf<String, ByteArray>()
+        pdfTempDir.mkdirs()
+        val pdfFilesByPath = mutableMapOf<String, File>()
         var manifestJson: String? = null
         BufferedInputStream(rawIn).use { buffered ->
             ZipInputStream(buffered).use { zis ->
                 var entry: ZipEntry? = zis.nextEntry
+                var pdfIndex = 0
                 while (entry != null) {
                     val name = entry.name
                     if (!entry.isDirectory) {
@@ -4773,8 +5293,18 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
                             name == FULL_BACKUP_MANIFEST -> {
                                 manifestJson = String(zis.readBytes(), Charsets.UTF_8)
                             }
-                            name.startsWith("pdfs/") -> {
-                                pdfBytesByPath[name] = zis.readBytes()
+                            name.startsWith("pdfs/") && name.endsWith(".pdf", ignoreCase = true) -> {
+                                // Stream to disk — avoid loading every PDF into memory (OOM / crash on large backups).
+                                val safeName = "pdf_${pdfIndex++}_${sanitizeBackupPathComponent(name.substringAfterLast('/'))}"
+                                val tmp = File(pdfTempDir, safeName)
+                                BufferedOutputStream(FileOutputStream(tmp)).use { out ->
+                                    copyStream(zis, out)
+                                }
+                                if (tmp.isFile && tmp.length() > 0L) {
+                                    pdfFilesByPath[name] = tmp
+                                } else {
+                                    tmp.delete()
+                                }
                             }
                         }
                     }
@@ -4810,11 +5340,14 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
             val invoiceNumber = o.getString("invoiceNumber")
             val cancelledRestore = o.optBoolean("cancelled", false)
             val storedPdf = o.optString("storedPdf", "")
-            val bytes = if (storedPdf.isNotBlank()) pdfBytesByPath[storedPdf] else null
+            val tmpPdf = if (storedPdf.isNotBlank()) pdfFilesByPath[storedPdf] else null
             var filePath = ""
-            if (bytes != null && bytes.isNotEmpty()) {
-                val dest = File(invoicesFolder, "Invoice_${invoiceNumber}_restore_$i.pdf")
-                dest.outputStream().use { it.write(bytes) }
+            if (tmpPdf != null && tmpPdf.isFile && tmpPdf.length() > 0L) {
+                val dest = File(
+                    invoicesFolder,
+                    "Invoice_${sanitizeBackupPathComponent(invoiceNumber)}_restore_$i.pdf"
+                )
+                tmpPdf.copyTo(dest, overwrite = true)
                 filePath = dest.absolutePath
             }
             if (filePath.isBlank()) {
@@ -4855,6 +5388,8 @@ private fun restoreFullBackupFromZipStream(context: Context, storage: BillingSto
         null
     } catch (e: Exception) {
         e.message ?: "Restore failed"
+    } finally {
+        runCatching { pdfTempDir.deleteRecursively() }
     }
 }
 
@@ -5631,6 +6166,7 @@ object InvoicePdfGenerator {
 fun createSalesReportPdf(
     context: Context,
     reportType: String,
+    yearFilter: String,
     monthFilter: String,
     customerFilter: String,
     rows: List<ReportRow>,
@@ -5674,12 +6210,14 @@ fun createSalesReportPdf(
             strokeWidth = 1.2f
             style = Paint.Style.STROKE
         }
+        val keyHeader = reportSummaryKeyHeader(reportType)
+        val metricHeader = reportSummaryMetricHeader(reportType)
 
         fun drawPageHeader(): Float {
             canvas.drawText("Crumbs & Soul - Sales Report", 70f, 100f, titlePaint)
             canvas.drawText("Type: $reportType", 70f, 150f, subtitlePaint)
             val filterLines = pdfWrapText(
-                "Month: $monthFilter | Customer: $customerFilter",
+                "Year: $yearFilter | Month: $monthFilter | Customer: $customerFilter",
                 subtitlePaint,
                 1100f
             )
@@ -5719,8 +6257,8 @@ fun createSalesReportPdf(
 
         fun drawSummaryTableHeaders(atY: Float): Float {
             var yy = atY
-            canvas.drawText(if (reportType == "Month-wise") "Month" else "Customer", 70f, yy, boldPaint)
-            canvas.drawText("Invoices", 700f, yy, boldPaint)
+            canvas.drawText(keyHeader, 70f, yy, boldPaint)
+            canvas.drawText(metricHeader, 700f, yy, boldPaint)
             canvas.drawText("Total Sales", 930f, yy, boldPaint)
             yy += 28f
             canvas.drawLine(60f, yy, 1180f, yy, rulePaint)
@@ -5742,7 +6280,12 @@ fun createSalesReportPdf(
             nameLines.forEachIndexed { i, line ->
                 canvas.drawText(line, xNameCol, rowTop + i * summaryBodyLh, bodyPaint)
             }
-            canvas.drawText(row.invoiceCount.toString(), xCountCol, rowTop, bodyPaint)
+            canvas.drawText(
+                reportSummaryMetricValue(row, reportType).toString(),
+                xCountCol,
+                rowTop,
+                bodyPaint
+            )
             canvas.drawText("₹${money(row.totalSales)}", xTotalCol, rowTop, bodyPaint)
             y = rowTop + rowBlockH
         }
@@ -5750,8 +6293,13 @@ fun createSalesReportPdf(
         y += 20f
         canvas.drawLine(60f, y, 1180f, y, rulePaint)
         y += 40f
+        val grandTotalText = if (reportType == "Product-wise") {
+            "Grand Total: ${rows.sumOf { it.quantitySold }} units | ₹${money(rows.sumOf { it.totalSales })}"
+        } else {
+            "Grand Total: ₹${money(rows.sumOf { it.totalSales })}"
+        }
         val grandLines = pdfWrapText(
-            "Grand Total: ₹${money(rows.sumOf { it.totalSales })}",
+            grandTotalText,
             boldPaint,
             1050f
         )
@@ -5910,6 +6458,7 @@ fun createSalesReportPdf(
 fun createSalesReportExcel(
     context: Context,
     reportType: String,
+    yearFilter: String,
     monthFilter: String,
     customerFilter: String,
     rows: List<ReportRow>,
@@ -5919,6 +6468,8 @@ fun createSalesReportExcel(
     return try {
         val workbook = XSSFWorkbook()
         val generatedOn = SimpleDateFormat("dd MMM yyyy HH:mm", Locale.getDefault()).format(Date())
+        val keyHeader = reportSummaryKeyHeader(reportType)
+        val metricHeader = reportSummaryMetricHeader(reportType)
 
         // Sheet 1 — mirrors PDF: summary table + invoice-wise details (same columns as PDF).
         val sheet1 = workbook.createSheet("Sales Report")
@@ -5926,24 +6477,48 @@ fun createSalesReportExcel(
         sheet1.createRow(rowIndex++).apply { createCell(0).setCellValue("Crumbs & Soul - Sales Report") }
         sheet1.createRow(rowIndex++).apply { createCell(0).setCellValue("Type: $reportType") }
         sheet1.createRow(rowIndex++).apply {
-            createCell(0).setCellValue("Month: $monthFilter | Customer: $customerFilter")
+            createCell(0).setCellValue(
+                "Year: $yearFilter | Month: $monthFilter | Customer: $customerFilter"
+            )
         }
         rowIndex++
-        sheet1.createRow(rowIndex++).apply {
-            createCell(0).setCellValue(if (reportType == "Month-wise") "Month" else "Customer")
-            createCell(1).setCellValue("Invoices")
-            createCell(2).setCellValue("Total Sales (₹)")
-        }
-        rows.forEach {
+        if (reportType == "Product-wise") {
             sheet1.createRow(rowIndex++).apply {
-                createCell(0).setCellValue(it.key)
-                createCell(1).setCellValue(it.invoiceCount.toDouble())
-                createCell(2).setCellValue(it.totalSales)
+                createCell(0).setCellValue(keyHeader)
+                createCell(1).setCellValue(metricHeader)
+                createCell(2).setCellValue("Invoices")
+                createCell(3).setCellValue("Total Sales (₹)")
             }
-        }
-        sheet1.createRow(rowIndex++).apply {
-            createCell(0).setCellValue("Grand Total")
-            createCell(2).setCellValue(rows.sumOf { it.totalSales })
+            rows.forEach {
+                sheet1.createRow(rowIndex++).apply {
+                    createCell(0).setCellValue(it.key)
+                    createCell(1).setCellValue(it.quantitySold.toDouble())
+                    createCell(2).setCellValue(it.invoiceCount.toDouble())
+                    createCell(3).setCellValue(it.totalSales)
+                }
+            }
+            sheet1.createRow(rowIndex++).apply {
+                createCell(0).setCellValue("Grand Total")
+                createCell(1).setCellValue(rows.sumOf { it.quantitySold }.toDouble())
+                createCell(3).setCellValue(rows.sumOf { it.totalSales })
+            }
+        } else {
+            sheet1.createRow(rowIndex++).apply {
+                createCell(0).setCellValue(keyHeader)
+                createCell(1).setCellValue(metricHeader)
+                createCell(2).setCellValue("Total Sales (₹)")
+            }
+            rows.forEach {
+                sheet1.createRow(rowIndex++).apply {
+                    createCell(0).setCellValue(it.key)
+                    createCell(1).setCellValue(it.invoiceCount.toDouble())
+                    createCell(2).setCellValue(it.totalSales)
+                }
+            }
+            sheet1.createRow(rowIndex++).apply {
+                createCell(0).setCellValue("Grand Total")
+                createCell(2).setCellValue(rows.sumOf { it.totalSales })
+            }
         }
         sheet1.createRow(rowIndex++).apply {
             createCell(0).setCellValue("Generated on: $generatedOn")
@@ -5974,7 +6549,7 @@ fun createSalesReportExcel(
         }
         sheet1.safeAutoSizeColumnsInclusive(7)
 
-        // Sheet 2 — item-wise sales with B2B / B2C split.
+        // Sheet 2 — item-wise sales with B2B / B2C split (always included for the filtered period).
         val sheet2 = workbook.createSheet("Item Sales B2B B2C")
         var r2 = 0
         sheet2.createRow(r2++).apply {
@@ -5998,6 +6573,32 @@ fun createSalesReportExcel(
             }
         }
         sheet2.safeAutoSizeColumnsInclusive(6)
+
+        // Dedicated product-wise sheet when that report type is selected (qty focus).
+        if (reportType == "Product-wise") {
+            val sheetProduct = workbook.createSheet("Product Qty Sold")
+            var rp = 0
+            sheetProduct.createRow(rp++).apply {
+                createCell(0).setCellValue("Product")
+                createCell(1).setCellValue("Qty Sold")
+                createCell(2).setCellValue("Invoices")
+                createCell(3).setCellValue("Total Sales (₹)")
+            }
+            rows.forEach {
+                sheetProduct.createRow(rp++).apply {
+                    createCell(0).setCellValue(it.key)
+                    createCell(1).setCellValue(it.quantitySold.toDouble())
+                    createCell(2).setCellValue(it.invoiceCount.toDouble())
+                    createCell(3).setCellValue(it.totalSales)
+                }
+            }
+            sheetProduct.createRow(rp++).apply {
+                createCell(0).setCellValue("Grand Total")
+                createCell(1).setCellValue(rows.sumOf { it.quantitySold }.toDouble())
+                createCell(3).setCellValue(rows.sumOf { it.totalSales })
+            }
+            sheetProduct.safeAutoSizeColumnsInclusive(3)
+        }
 
         // Sheet 3 — customer-wise sales (name + phone bucket).
         val sheet3 = workbook.createSheet("Customer Sales")
@@ -6465,17 +7066,101 @@ fun openExportedFile(context: Context, file: File) {
 }
 
 fun shareAnyFile(context: Context, file: File, mimeType: String, chooserTitle: String = "Share file") {
-    val uri: Uri = FileProvider.getUriForFile(
-        context,
-        "${context.packageName}.fileprovider",
-        file
-    )
-    val shareIntent = Intent(Intent.ACTION_SEND).apply {
-        type = mimeType
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    try {
+        if (!file.isFile) {
+            Toast.makeText(context, "Backup file not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri: Uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Crumbs & Soul full backup")
+            putExtra(
+                Intent.EXTRA_TEXT,
+                "Attached is a full backup of the Crumbs & Soul billing app."
+            )
+            clipData = ClipData.newUri(context.contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, chooserTitle))
+    } catch (_: Exception) {
+        Toast.makeText(context, "Failed to share file", Toast.LENGTH_SHORT).show()
     }
-    context.startActivity(Intent.createChooser(shareIntent, chooserTitle))
+}
+
+/** Shares a full backup ZIP via WhatsApp (or WhatsApp Business), with share-sheet fallback. */
+fun shareBackupToWhatsApp(context: Context, file: File) {
+    try {
+        if (!file.isFile) {
+            Toast.makeText(context, "Backup file not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        grantReadToWhatsAppPackages(context, listOf(uri))
+        fun buildIntent(targetPackage: String?): Intent =
+            Intent(Intent.ACTION_SEND).apply {
+                type = "application/zip"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(
+                    Intent.EXTRA_TEXT,
+                    "Crumbs & Soul full backup (${file.name})"
+                )
+                clipData = ClipData.newUri(context.contentResolver, file.name, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                if (targetPackage != null) `package` = targetPackage
+            }
+        try {
+            context.startActivity(buildIntent("com.whatsapp"))
+        } catch (_: Exception) {
+            try {
+                context.startActivity(buildIntent("com.whatsapp.w4b"))
+            } catch (_: Exception) {
+                Toast.makeText(context, "WhatsApp not found. Opening share sheet.", Toast.LENGTH_SHORT).show()
+                context.startActivity(Intent.createChooser(buildIntent(null), "Share backup via WhatsApp"))
+            }
+        }
+    } catch (_: Exception) {
+        Toast.makeText(context, "Failed to share backup", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Opens an email-oriented share sheet with the backup attached. */
+fun shareBackupViaEmail(context: Context, file: File) {
+    try {
+        if (!file.isFile) {
+            Toast.makeText(context, "Backup file not found", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val emailIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/zip"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "Crumbs & Soul full backup")
+            putExtra(
+                Intent.EXTRA_TEXT,
+                "Attached is a full backup of the Crumbs & Soul billing app. " +
+                    "Import this ZIP in the app (Backup → Import backup) to restore all data."
+            )
+            clipData = ClipData.newUri(context.contentResolver, file.name, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(emailIntent, "Share backup via Email"))
+    } catch (_: Exception) {
+        Toast.makeText(context, "Failed to share backup via email", Toast.LENGTH_SHORT).show()
+    }
 }
 
 fun exportJsonAndShare(context: Context, fileName: String, json: String) {

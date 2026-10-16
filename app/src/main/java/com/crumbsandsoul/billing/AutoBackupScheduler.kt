@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Environment
 import android.util.Log
 import java.io.File
 import java.time.Instant
@@ -17,8 +18,30 @@ object AutoBackupScheduler {
     /** PendingIntent for [AlarmManager.AlarmClockInfo] “show alarm” UI — must not reuse the backup broadcast PI. */
     private const val RC_ALARM_CLOCK_SHOW = 91002
 
-    fun autoBackupZipFile(context: Context): File =
-        File(context.filesDir, "CrumbsAndSoul_auto_full_backup.zip")
+    /** Single canonical backup filename — manual and automatic backups overwrite this same file. */
+    const val FULL_BACKUP_ZIP_NAME = "CrumbsAndSoul_full_backup.zip"
+    const val BACKUP_FOLDER_NAME = "CrumbsAndSoulBackups"
+
+    /** Legacy path used by older builds; deleted after migration. */
+    private const val LEGACY_AUTO_BACKUP_ZIP_NAME = "CrumbsAndSoul_auto_full_backup.zip"
+
+    /**
+     * The one app-local backup file (overwritten on every successful manual or automatic backup).
+     * Mirrored to public Download/[BACKUP_FOLDER_NAME]/ for user access.
+     */
+    fun primaryBackupZipFile(context: Context): File {
+        val dir = File(
+            context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
+            BACKUP_FOLDER_NAME
+        ).apply { mkdirs() }
+        return File(dir, FULL_BACKUP_ZIP_NAME)
+    }
+
+    /** @deprecated Use [primaryBackupZipFile] — kept as a clear alias for call sites. */
+    fun autoBackupZipFile(context: Context): File = primaryBackupZipFile(context)
+
+    fun legacyAutoBackupZipFile(context: Context): File =
+        File(context.filesDir, LEGACY_AUTO_BACKUP_ZIP_NAME)
 
     /** Next occurrence of [hour]:[minute] (local) strictly after [afterMillis]. */
     fun nextSlotAtTimeStrictlyAfter(afterMillis: Long, hour: Int, minute: Int): Long {
@@ -52,6 +75,29 @@ object AutoBackupScheduler {
             next = nextDate.atTime(h, min).atZone(zone)
         }
         return next.toInstant().toEpochMilli()
+    }
+
+    /**
+     * True when automatic backup is enabled and a run is due now (missed alarm, first enable after
+     * today's slot, or interval elapsed).
+     */
+    fun isBackupOverdue(storage: BillingStorage, nowMillis: Long = System.currentTimeMillis()): Boolean {
+        if (!storage.isAutoBackupEnabled()) return false
+        val last = storage.getLastAutoBackupSuccessMillis()
+        val interval = storage.getAutoBackupIntervalDays()
+        val h = storage.getAutoBackupHour()
+        val m = storage.getAutoBackupMinute()
+        if (last <= 0L) {
+            val zone = ZoneId.systemDefault()
+            val todaySlot = ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMillis), zone)
+                .toLocalDate()
+                .atTime(h, m)
+                .atZone(zone)
+                .toInstant()
+                .toEpochMilli()
+            return nowMillis >= todaySlot
+        }
+        return computeNextAfterBackup(interval, last, h, m) <= nowMillis
     }
 
     private fun advanceToNextFutureTrigger(
@@ -106,6 +152,7 @@ object AutoBackupScheduler {
 
     /**
      * Restore or create the alarm (app start, boot, or after changing settings).
+     * If a run was missed, starts [AutoBackupService] promptly instead of waiting another day.
      */
     fun reschedule(context: Context) {
         val app = context.applicationContext
@@ -114,8 +161,22 @@ object AutoBackupScheduler {
             cancel(app)
             return
         }
-        val last = storage.getLastAutoBackupSuccessMillis()
         val now = System.currentTimeMillis()
+        if (isBackupOverdue(storage, now)) {
+            Log.i(TAG, "Auto backup overdue — starting catch-up now")
+            if (AutoBackupService.isRunning()) {
+                // In-flight run will call scheduleNextAfterBackup when finished.
+                Log.d(TAG, "Catch-up skipped — backup already running")
+                return
+            }
+            // Service schedules the next alarm when the run finishes (success or failure).
+            // Only schedule a distant retry if the service could not be started at all.
+            if (!AutoBackupService.start(app)) {
+                scheduleAlarmAt(app, now + 15 * 60_000L)
+            }
+            return
+        }
+        val last = storage.getLastAutoBackupSuccessMillis()
         val whenMillis = advanceToNextFutureTrigger(storage, last, now)
         scheduleAlarmAt(app, whenMillis)
     }
@@ -151,19 +212,26 @@ object AutoBackupScheduler {
         val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pi = pendingIntent(context)
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val showPi = alarmClockShowPendingIntent(context)
-                am.setAlarmClock(
-                    AlarmManager.AlarmClockInfo(triggerAtMillis, showPi),
-                    pi
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                am.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
-            }
+            // setAlarmClock is not subject to exact-alarm quota restrictions and survives Doze.
+            val showPi = alarmClockShowPendingIntent(context)
+            am.setAlarmClock(
+                AlarmManager.AlarmClockInfo(triggerAtMillis, showPi),
+                pi
+            )
             Log.d(TAG, "Scheduled auto backup at $triggerAtMillis")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to schedule auto backup", e)
+            Log.e(TAG, "setAlarmClock failed, trying setAndAllowWhileIdle", e)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+                } else {
+                    @Suppress("DEPRECATION")
+                    am.setExact(AlarmManager.RTC_WAKEUP, triggerAtMillis, pi)
+                }
+                Log.d(TAG, "Scheduled auto backup (fallback) at $triggerAtMillis")
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed to schedule auto backup", e2)
+            }
         }
     }
 }
